@@ -10,7 +10,6 @@ A self-hosted agent that watches your topics across live sources, filters noise 
 * [Sources](#sources)
 * [Delivery](#delivery)
 * [CLI](#cli)
-* [Roadmap](#roadmap)
 
 ## Getting started
 
@@ -212,17 +211,3 @@ news-agent doctor           health checks
 news-agent init             interactive setup wizard
 ```
 
-## Roadmap
-
-| Milestone | Scope | Status |
-|---|---|---|
-| M0–M2 | Scaffolding, source adapters, Slack notifier | ✓ |
-| M3 | Pipeline: Haiku tagger + Sonnet scorer + boosts + decay | next |
-| M4 | Trend detection | — |
-| M5 | Scheduler: launchd/systemd, hot reload | — |
-| M6 | Learning loop: corrections → prior updates | — |
-| M7 | Eval harness | — |
-| M8 | CLI ops, doctor validation | — |
-| M9 | Safari write-back | — |
-| M10 | Cost cap, release | — |
-| v1.1 | Telegram notifier, auto-tune priors | — |
