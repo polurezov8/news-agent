@@ -1,0 +1,92 @@
+# Starter sources. Add more via `news-agent source add` or edit directly.
+#
+# Each source declares which topics it feeds. An article from this source
+# is only matched against those topics — keeps signal:noise high.
+
+sources:
+  - id: hackernews
+    type: hackernews
+    config:
+      min_points: 300
+      limit: 10
+    topics: [ai, ios, eng_leadership]
+    weight: 0.8
+    enabled: true
+
+  - id: arxiv_ai
+    type: arxiv
+    config:
+      categories: [cs.AI, cs.LG, cs.CL]
+      max_results: 8
+    topics: [ai]
+    weight: 0.85
+    enabled: false                    # 429-prone; re-enable when arxiv adapter rate-limits
+
+  - id: lobsters
+    type: lobsters
+    config:
+      min_score: 30
+    topics: [ai, ios, eng_leadership]
+    weight: 0.75
+    enabled: false                    # overlaps with HN; re-enable later
+
+  - id: gh_trending_swift
+    type: github_trending
+    config:
+      language: Swift
+      since: weekly
+      min_stars_today: 50
+    topics: [ios]
+    weight: 0.7
+    enabled: true
+
+  - id: pointfree
+    type: rss
+    config:
+      url: "https://www.pointfree.co/blog/feed/atom.xml"
+    topics: [ios]
+    weight: 0.95
+    enabled: true
+
+  - id: dou
+    type: rss
+    config:
+      url: "https://dou.ua/feed/"
+    topics: [eng_leadership, ios]
+    weight: 0.85
+    enabled: true
+    min_in_digest: 1                  # always surface one DOU article per run
+
+  - id: x_bcherny
+    type: rsshub
+    config:
+      route: /twitter/user/bcherny
+    topics: [ios, eng_leadership]
+    weight: 0.85
+    enabled: true
+
+  - id: safari_reading_list
+    type: safari_reading_list
+    config:
+      write_back: false
+    topics: [ai, ios, eng_leadership]
+    weight: 0.95
+    enabled: true
+
+  # Requires RSSHub running: `docker compose up -d rsshub`
+  # Set RSSHUB_BASE_URL in .env if not at default http://localhost:1200
+  - id: x_karpathy
+    type: rsshub
+    config:
+      route: /twitter/user/karpathy
+    topics: [ai]
+    weight: 0.9
+    enabled: true
+
+  - id: tg_ios_devs_ua
+    type: rsshub
+    config:
+      route: /telegram/channel/iOSDevsUA
+    topics: [ios]
+    weight: 0.85
+    enabled: true

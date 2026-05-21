@@ -1,0 +1,8 @@
+# Per-(source, topic) editorial seed weights. Empty by default.
+# A single source can be gold for one topic and noise for another.
+# Manual tuning in v1.0; auto-tune deferred to v1.1.
+#
+# Schema:
+#   - { source: <source_id>, topic: <topic_id>, weight: <0..1> }
+
+priors: []

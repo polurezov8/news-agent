@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>ArXiv Query</title>
+  <id>http://arxiv.org/api/query</id>
+  <updated>2026-05-21T00:00:00Z</updated>
+  <entry>
+    <id>http://arxiv.org/abs/2605.00001v1</id>
+    <updated>2026-05-21T00:00:00Z</updated>
+    <published>2026-05-21T00:00:00Z</published>
+    <title>A novel approach to something interesting</title>
+    <summary>This paper describes a novel approach.</summary>
+    <link href="http://arxiv.org/abs/2605.00001v1" rel="alternate" type="text/html"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.00002v1</id>
+    <updated>2026-05-20T00:00:00Z</updated>
+    <published>2026-05-20T00:00:00Z</published>
+    <title>Another paper about a different topic</title>
+    <summary>Abstract of paper two.</summary>
+    <link href="http://arxiv.org/abs/2605.00002v1" rel="alternate" type="text/html"/>
+  </entry>
+</feed>

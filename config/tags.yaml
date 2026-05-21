@@ -1,0 +1,45 @@
+# Controlled tag vocabulary. Haiku tags articles only from this list.
+# New tag suggestions land in `tag_suggestions` table for `news-agent tag review`.
+#
+# Categories are arbitrary keys. Tags are flat strings, lowercase, snake_case.
+
+tags:
+  # What an article is about
+  domain:
+    - ai_research
+    - llm
+    - ai_tools
+    - ai_safety
+    - ios_engineering
+    - swift
+    - swiftui
+    - tca
+    - apple_ecosystem
+    - eng_leadership
+    - eng_management
+    - product
+    - growth
+    - dev_productivity
+    - infra
+    - distributed_systems
+    - security
+
+  # Piece type
+  type:
+    - news
+    - announcement
+    - essay
+    - tutorial
+    - retrospective
+    - paper
+    - tool
+    - opinion
+    - listicle           # negative signal
+    - promo              # negative signal
+
+  # Signal heuristics
+  quality:
+    - hands_on           # code / concrete examples
+    - first_person       # author's direct experience
+    - data_driven        # has metrics / evidence
+    - speculative

@@ -1,0 +1,71 @@
+# Topics = saved queries over tags.
+
+topics:
+  ai:
+    label: AI
+    emoji: 🤖
+    query:
+      must_have_any: [ai_research, llm, ai_tools, ai_safety]
+      must_not_have: [promo, listicle]
+      boost:
+        - { tags: [hands_on, first_person], weight: 0.2 }
+        - { tags: [paper, data_driven], weight: 0.15 }
+      penalize:
+        - { tags: [speculative], weight: -0.1 }
+    recency:
+      half_life_days: 3
+    nl_rules:
+      - "Prefer concrete results, benchmarks, or working code over high-level commentary."
+      - "Penalize hype, vague predictions, and marketing announcements."
+      - "Reward first-person retrospectives from practitioners."
+    delivery:
+      digest_top_n: 2
+      digest_min_score: 0.6
+      priority_threshold: 0.9
+      priority_recency_hours: 24
+
+  ios:
+    label: iOS Engineering
+    emoji: 📱
+    query:
+      must_have_any: [ios_engineering, swift, swiftui, tca, apple_ecosystem]
+      must_not_have: [promo, listicle]
+      boost:
+        - { tags: [tca, hands_on], weight: 0.25 }
+        - { tags: [swift, tutorial], weight: 0.1 }
+      penalize:
+        - { tags: [opinion], weight: -0.05 }
+    recency:
+      half_life_days: 14
+    nl_rules:
+      - "Prefer concrete Swift/SwiftUI/TCA patterns and runnable code over abstract design talk."
+      - "Reward deep technical posts about Swift concurrency, macros, observation, or system frameworks."
+      - "Apple platform announcements (WWDC, betas) are inherently relevant."
+    delivery:
+      digest_top_n: 2
+      digest_min_score: 0.6
+      priority_threshold: 0.92
+      priority_recency_hours: 48
+
+  eng_leadership:
+    label: Engineering Leadership
+    emoji: 🧭
+    query:
+      must_have_any: [eng_leadership, eng_management, product, growth, dev_productivity]
+      must_not_have: [promo, listicle]
+      boost:
+        - { tags: [first_person, retrospective], weight: 0.3 }
+        - { tags: [data_driven], weight: 0.15 }
+      penalize:
+        - { tags: [speculative, opinion], weight: -0.1 }
+    recency:
+      half_life_days: 30
+    nl_rules:
+      - "Prefer first-person stories from engineering leaders running real teams."
+      - "Reward concrete frameworks/processes with evidence, not generic management advice."
+      - "Penalize repackaged listicles and motivational content."
+    delivery:
+      digest_top_n: 2
+      digest_min_score: 0.6
+      priority_threshold: 0.95
+      priority_recency_hours: 72

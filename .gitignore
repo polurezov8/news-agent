@@ -1,0 +1,20 @@
+.env
+.env.local
+*.db
+*.sqlite
+*.sqlite3
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+dist/
+build/
+*.egg-info/
+news_agent.db
+logs/
+.news-agent/
+eval/fixtures.yaml
+# `eval/fixtures.public.yaml` intentionally NOT ignored — public synthetic
+# regression set meant to be committed.
