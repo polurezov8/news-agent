@@ -18,3 +18,5 @@ logs/
 eval/fixtures.yaml
 # `eval/fixtures.public.yaml` intentionally NOT ignored — public synthetic
 # regression set meant to be committed.
+
+.superpowers/

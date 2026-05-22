@@ -1,15 +1,23 @@
 # 📰 News agent
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://docs.python.org/3/)
+[![Tests](https://img.shields.io/badge/tests-147%20passing-brightgreen.svg)](#tests)
+[![Self-hosted](https://img.shields.io/badge/self--hosted-yes-success.svg)](#)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A self-hosted agent that watches your topics across live sources, filters noise with a two-pass LLM, and delivers compact digests to your Slack DM 💬. Nothing leaves your machine except LLM calls. ~$2–4/month.
+A self-hosted agent that watches your topics across live sources, filters noise with a two-pass LLM, and delivers compact digests to your Slack DM. Nothing leaves your machine except LLM calls (~$2–4/month).
 
-* [Getting started](#getting-started)
-* [How it works](#how-it-works)
-* [Configuration](#configuration)
-* [Sources](#sources)
-* [Delivery](#delivery)
-* [CLI](#cli)
+---
+
+- [Getting started](#getting-started)
+- [How it works](#how-it-works)
+- [Configuration](#configuration)
+- [Sources](#sources)
+- [Delivery](#delivery)
+- [CLI](#cli)
+- [Tests](#tests)
+
+---
 
 ## Getting started
 
@@ -47,7 +55,7 @@ Verify:
 
 ```bash
 uv run news-agent --help
-uv run pytest tests/unit/ -q    # 50 passed
+uv run pytest tests/unit/ -q    # 147 passed
 ```
 
 ### Slack app setup
@@ -72,6 +80,8 @@ curl http://localhost:1200/healthz    # {"status":"ok"}
 ```
 
 Set `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` from your Twitter cookies in `.env`.
+
+---
 
 ## How it works
 
@@ -99,6 +109,8 @@ final = (substance + tag_adj) * decay * source_weight
 ```
 
 The key design decision: tags describe what an article *is* (stable, vocab-bounded, cached across sources), while topics describe what *you care about* (personal queries over tags, freely editable). Changing a topic never re-runs the tagger.
+
+---
 
 ## Configuration
 
@@ -169,6 +181,8 @@ priors:
   - { source: hackernews, topic: <topic_id>, weight: 0.9 }
 ```
 
+---
+
 ## Sources
 
 | Type | Key config |
@@ -180,6 +194,8 @@ priors:
 | `lobsters` | `min_score`, `tags` |
 | `rsshub_twitter_list` | `list_id`, `rsshub_base_url` |
 | `safari_reading_list` | `write_back` |
+
+---
 
 ## Delivery
 
@@ -195,10 +211,12 @@ Reactions also work inline: 👍 boost · 💤 skip · ❌ demote · 🔖 save.
 
 | Cadence | When | Content |
 |---|---|---|
-| Daily digest | 09:00 local | Top-N per topic, global max 10 |
+| Daily digest | 10:00 local | Top-2 per topic, `min_score ≥ 0.6`, trusted-source guarantees |
 | Priority DM | Real-time | Score above topic threshold within freshness window |
 | Weekly recap | Sunday 10:00 | Top of week + high-score items you skipped |
 | On-demand | `/news` | Run pipeline immediately |
+
+---
 
 ## CLI
 
@@ -210,4 +228,17 @@ news-agent status           counters and cost MTD
 news-agent doctor           health checks
 news-agent init             interactive setup wizard
 ```
+
+---
+
+## Tests
+
+```bash
+uv run pytest tests/unit/ -q    # 147 tests
+uv run ruff check src tests
+```
+
+---
+
+[MIT](LICENSE) — © 2026 Dmytro Poluriezov.
 

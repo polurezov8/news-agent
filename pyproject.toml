@@ -1,7 +1,7 @@
 [project]
 name = "news-agent"
 version = "1.1.1"
-description = "Personal news + reading agent (LangGraph + Anthropic + Slack)"
+description = "Self-hosted personal news + reading agent (LangGraph + Anthropic + Slack)"
 requires-python = ">=3.11"
 dependencies = [
     "langgraph>=0.2.50",
