@@ -1,7 +1,7 @@
 # 📰 News agent
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://docs.python.org/3/)
-[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-205%20passing-brightgreen.svg)](#tests)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-yes-success.svg)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -55,7 +55,7 @@ Verify:
 
 ```bash
 uv run news-agent --help
-uv run pytest tests/unit/ -q    # 169 passed
+uv run pytest tests/unit/ -q    # 205 passed
 ```
 
 ### Slack app setup
@@ -234,20 +234,24 @@ DOU · Engineering Leadership · 4h ago
 ## CLI
 
 ```bash
-news-agent                  run pipeline
+news-agent run [--cadence daily|priority|weekly] [--no-slack] [--dry-run]
 news-agent slack            start Slack Socket Mode listener
 news-agent slack --demo     post a sample digest to verify formatting
 news-agent status           counters and cost MTD
 news-agent doctor           health checks
+news-agent backup [--dest PATH] [--keep N]
+news-agent schedule install | uninstall | restart | status
 news-agent init             interactive setup wizard
 ```
+
+`--dry-run` previews the pipeline end-to-end — LLM calls still fire (and bill) but no articles/tags/scores are persisted and no Slack messages are posted. Use it before changing prompts or topic configs.
 
 ---
 
 ## Tests
 
 ```bash
-uv run pytest tests/unit/ -q    # 169 tests
+uv run pytest tests/unit/ -q    # 205 tests
 uv run ruff check src tests
 ```
 
