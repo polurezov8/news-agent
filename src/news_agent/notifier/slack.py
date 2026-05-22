@@ -213,7 +213,7 @@ def _demo_payload() -> DigestPayload:
     rows = [
         ("demo:aaa111bbb222cccc", "hn", "Demo: What I Learned Shipping a Solo Product", "https://news.ycombinator.com/item?id=1", "ai", 0.87, timedelta(minutes=20)),
         ("demo:ddd333eee444ffff", "arxiv", "Demo: Scaling Laws for Neural Language Models", "https://arxiv.org/abs/2001.08361", "ai", 0.74, timedelta(hours=4)),
-        ("demo:ggg555hhh666iiii", "lobsters", "Demo: Writing a Compiler in 500 Lines", "https://lobste.rs/s/example", "ios", 0.61, timedelta(days=2)),
+        ("demo:ggg555hhh666iiii", "lobsters", "Demo: Writing a Compiler in 500 Lines", "https://lobste.rs/", "ios", 0.61, timedelta(days=2)),
     ]
     items: list[tuple[Article, ScoreResult]] = []
     for aid, src, title, url, topic, final, age in rows:
