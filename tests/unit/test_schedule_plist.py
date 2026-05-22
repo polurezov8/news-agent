@@ -59,3 +59,26 @@ def test_logs_path_per_cadence():
 def test_on_demand_is_unschedulable():
     with pytest.raises(ValueError):
         generate_plist(Cadence.ON_DEMAND, bin_path="x", working_dir="x", log_dir="x")
+
+
+def test_listener_plist_runs_continuously_with_keepalive():
+    """Reaction listener runs as a daemon — RunAtLoad + KeepAlive, no calendar/interval schedule."""
+    from news_agent.cli.schedule import LISTENER_LABEL, generate_listener_plist
+
+    p = generate_listener_plist(
+        bin_path="/path/to/news-agent",
+        working_dir="/proj",
+        log_dir="/logs",
+    )
+    assert LISTENER_LABEL in p
+    assert "<key>RunAtLoad</key>" in p
+    assert "<true/>" in p
+    assert "<key>KeepAlive</key>" in p
+    # listener invokes `news-agent slack` (Socket Mode listener)
+    assert "<string>slack</string>" in p
+    # not a cron — no calendar or interval schedule
+    assert "<key>StartCalendarInterval</key>" not in p
+    assert "<key>StartInterval</key>" not in p
+    # logs per the listener bucket
+    assert "<string>/logs/listener.log</string>" in p
+    assert "<string>/logs/listener.err</string>" in p

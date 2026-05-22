@@ -1,7 +1,7 @@
 # 📰 News agent
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://docs.python.org/3/)
-[![Tests](https://img.shields.io/badge/tests-147%20passing-brightgreen.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen.svg)](#tests)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-yes-success.svg)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -55,7 +55,7 @@ Verify:
 
 ```bash
 uv run news-agent --help
-uv run pytest tests/unit/ -q    # 147 passed
+uv run pytest tests/unit/ -q    # 169 passed
 ```
 
 ### Slack app setup
@@ -199,22 +199,35 @@ priors:
 
 ## Delivery
 
-All messages arrive in your Slack DM. Each item shows a score bar and four feedback buttons:
+All messages arrive in your Slack DM. Typography does the work — date as headline, small-caps section labels, bold linked title with an italic meta line. No score bars, no button rows, no chrome.
 
 ```
-Article title
-`source` · score 0.87 [████████░░]
-[👍 Boost]  [🔖 Save]  [💤 Skip]  [❌ Demote]
+Friday, May 22
+
+⭐️  EDITOR'S PICK
+
+Scaling Laws for Neural Language Models
+arxiv · AI · this morning
+
+✨  ALSO TODAY
+
+SwiftUI для справжніх macOS-застосунків
+iOSDevsUA · iOS · this morning
+
+How Shopify ships big features in small slices
+DOU · Engineering Leadership · 4h ago
+
+1531 scanned · 9 on topic · 3 picks
 ```
 
-Reactions also work inline: 👍 boost · 💤 skip · ❌ demote · 🔖 save.
+**Feedback is binary:** react with 👍 to boost the source/topic, 👎 to demote. Two reactions, zero ambiguity. The listener daemon (`news-agent slack`, runs as a launchd job after `news-agent schedule install`) resolves the reacted message back to the article and updates `source_priors` for the learning loop.
 
 | Cadence | When | Content |
 |---|---|---|
-| Daily digest | 10:00 local | Top-2 per topic, `min_score ≥ 0.6`, trusted-source guarantees |
-| Priority DM | Real-time | Score above topic threshold within freshness window |
-| Weekly recap | Sunday 10:00 | Top of week + high-score items you skipped |
-| On-demand | `/news` | Run pipeline immediately |
+| Daily digest | 10:00 local | Hard cap **3 picks total**: editor's pick + up to two also-today. Trusted-source guarantees fill first by recency; remaining slots by `final` score. Silent on empty days. |
+| Priority DM | Real-time | One-item card under 🔔 PRIORITY when `final ≥ topic.priority_threshold` within the freshness window. |
+| Weekly recap | Sunday 10:00 | ⭐️ TOP THIS WEEK + 💭 HIGH-SCORE BUT SKIPPED + footer: `runs · surfaced · boosted · demoted · top sources`. |
+| On-demand | `/news` | Run pipeline immediately. |
 
 ---
 
@@ -234,7 +247,7 @@ news-agent init             interactive setup wizard
 ## Tests
 
 ```bash
-uv run pytest tests/unit/ -q    # 147 tests
+uv run pytest tests/unit/ -q    # 169 tests
 uv run ruff check src tests
 ```
 

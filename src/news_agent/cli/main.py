@@ -321,15 +321,13 @@ def slack(
         console.print(f"[green]Demo digest posted — ts={ref.message_id}[/green]")
         return
 
-    from dataclasses import replace
     from datetime import datetime, timezone
     from pathlib import Path
 
-    from news_agent.core.types import ArticleId, CorrectionEvent, SourceId, TopicId
+    from news_agent.core.types import CorrectionEvent
     from news_agent.learning.priors import updated_prior
     from news_agent.storage.repository import (
         connect,
-        find_surface_target,
         get_source_prior,
         init_db,
         save_correction,
@@ -342,16 +340,6 @@ def slack(
     def _on_correction(ev: CorrectionEvent) -> None:
         conn = connect(db_path)
         try:
-            # Reactions arrive with article="unknown" — resolve via surfaces table.
-            if str(ev.article) == "unknown":
-                target = find_surface_target(conn, ev.surface.channel, ev.surface.message_id)
-                if target is None:
-                    console.print("[yellow]reaction on unknown message — ignored[/yellow]")
-                    return
-                article_id, topic_id = target
-                source_id = SourceId(str(article_id).split(":", 1)[0])
-                ev = replace(ev, article=article_id, topic=topic_id, source=source_id)
-
             save_correction(conn, ev)
             current = get_source_prior(conn, ev.source, ev.topic)
             base = 0.5 if current is None else current
@@ -365,7 +353,7 @@ def slack(
         finally:
             conn.close()
 
-    bolt = make_app(notifier=notifier, on_correction=_on_correction)
+    bolt = make_app(notifier=notifier, on_correction=_on_correction, db_path=db_path)
     console.print("[green]Slack Socket Mode listener starting…[/green]")
     start(bolt)
 

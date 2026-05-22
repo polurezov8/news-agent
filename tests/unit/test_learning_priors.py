@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from news_agent.core.types import CorrectionKind
-from news_agent.learning.priors import DEFAULT_LR, prior_delta, updated_prior
+from news_agent.learning.priors import prior_delta, updated_prior
 
 
 class TestPriorDelta:

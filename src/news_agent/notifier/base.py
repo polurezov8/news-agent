@@ -10,6 +10,7 @@ from news_agent.core.types import (
     CorrectionEvent,
     PipelineCounters,
     ScoreResult,
+    SourceId,
     SurfaceRef,
     TopicId,
 )
@@ -29,6 +30,17 @@ class DigestPayload:
 class PriorityPayload:
     article: Article
     score: ScoreResult
+    topic_labels: dict[TopicId, tuple[str, str]] = field(default_factory=dict)
+    """topic_id → (emoji, label). Used for the meta line; falls back to topic id."""
+
+
+@dataclass(frozen=True, slots=True)
+class WeeklyStats:
+    runs: int
+    surfaced: int
+    boosted: int
+    demoted: int
+    top_sources: list[tuple[SourceId, int]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +48,8 @@ class RecapPayload:
     top_items: list[tuple[Article, ScoreResult]]
     skipped_but_high: list[tuple[Article, ScoreResult]]
     window_days: int
+    topic_labels: dict[TopicId, tuple[str, str]] = field(default_factory=dict)
+    stats: WeeklyStats | None = None
 
 
 @runtime_checkable

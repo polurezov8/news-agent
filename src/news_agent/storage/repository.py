@@ -13,6 +13,7 @@ from news_agent.core.types import (
     Cadence,
     ContentHash,
     CorrectionEvent,
+    CorrectionKind,
     ScoreResult,
     SourceId,
     SurfaceRef,
@@ -256,7 +257,11 @@ def find_surface_target(
     channel: str,
     message_id: str,
 ) -> tuple[ArticleId, TopicId] | None:
-    """Look up which (article, topic) a slack message corresponds to."""
+    """Look up which (article, topic) a slack message corresponds to.
+
+    Returns one row even when the message contains multiple items — callers that
+    need the full set must use `find_surface_targets`.
+    """
     row = conn.execute(
         """
         SELECT article_id, topic_id FROM surfaces
@@ -268,6 +273,27 @@ def find_surface_target(
     if not row:
         return None
     return ArticleId(row["article_id"]), TopicId(row["topic_id"])
+
+
+def find_surface_targets(
+    conn: sqlite3.Connection,
+    channel: str,
+    message_id: str,
+) -> list[tuple[ArticleId, TopicId]]:
+    """All (article, topic) pairs surfaced in the given Slack message.
+
+    A daily digest packs multiple items into one Slack message, so a reaction
+    on that message is a signal about every item it contains — return all rows.
+    """
+    rows = conn.execute(
+        """
+        SELECT article_id, topic_id FROM surfaces
+        WHERE channel = ? AND message_id = ?
+        ORDER BY posted_at ASC, id ASC
+        """,
+        (channel, message_id),
+    ).fetchall()
+    return [(ArticleId(r["article_id"]), TopicId(r["topic_id"])) for r in rows]
 
 
 def save_llm_cost(
@@ -334,3 +360,79 @@ def query_skipped_high(
         (since.isoformat(), min_score, limit),
     ).fetchall()
     return [(_row_to_article(r), _row_to_score(r, ArticleId(r["id"]))) for r in rows]
+
+
+def count_distinct_run_days(
+    conn: sqlite3.Connection,
+    *,
+    since: datetime,
+    cadence: Cadence,
+) -> int:
+    """Number of distinct calendar days with at least one surface of `cadence` since `since`."""
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT substr(posted_at, 1, 10)) AS n
+        FROM surfaces
+        WHERE cadence = ? AND posted_at >= ?
+        """,
+        (cadence.value, since.isoformat()),
+    ).fetchone()
+    return int(row["n"] or 0)
+
+
+def count_surfaces_in_window(
+    conn: sqlite3.Connection,
+    *,
+    since: datetime,
+    cadence: Cadence,
+) -> int:
+    """Total surface rows of the given cadence since `since`."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM surfaces
+        WHERE cadence = ? AND posted_at >= ?
+        """,
+        (cadence.value, since.isoformat()),
+    ).fetchone()
+    return int(row["n"] or 0)
+
+
+def count_corrections_by_kind(
+    conn: sqlite3.Connection,
+    *,
+    since: datetime,
+    kind: CorrectionKind,
+) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM corrections
+        WHERE kind = ? AND at >= ?
+        """,
+        (kind.value, since.isoformat()),
+    ).fetchone()
+    return int(row["n"] or 0)
+
+
+def top_sources_in_window(
+    conn: sqlite3.Connection,
+    *,
+    since: datetime,
+    cadence: Cadence,
+    limit: int = 3,
+) -> list[tuple[SourceId, int]]:
+    """Top sources by number of surfaces in the window. Returns [(source_id, count), ...]."""
+    rows = conn.execute(
+        """
+        SELECT a.source_id AS source_id, COUNT(*) AS n
+        FROM surfaces s
+        JOIN articles a ON a.id = s.article_id
+        WHERE s.cadence = ? AND s.posted_at >= ?
+        GROUP BY a.source_id
+        ORDER BY n DESC, a.source_id ASC
+        LIMIT ?
+        """,
+        (cadence.value, since.isoformat(), limit),
+    ).fetchall()
+    return [(SourceId(r["source_id"]), int(r["n"])) for r in rows]

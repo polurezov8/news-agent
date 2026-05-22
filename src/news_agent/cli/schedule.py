@@ -15,6 +15,7 @@ schedule_app = typer.Typer(help="Manage launchd schedules (macOS).")
 console = Console()
 
 LABEL_PREFIX = "com.polurezov.news-agent"
+LISTENER_LABEL = f"{LABEL_PREFIX}.listener"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 LOG_DIR = Path.home() / "Library" / "Logs" / "news-agent"
 
@@ -80,8 +81,46 @@ def generate_plist(
     )
 
 
+def generate_listener_plist(
+    *,
+    bin_path: str,
+    working_dir: str,
+    log_dir: str,
+) -> str:
+    """Plist for the reaction listener daemon — RunAtLoad + KeepAlive, no schedule."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        f"    <key>Label</key>\n    <string>{LISTENER_LABEL}</string>\n"
+        "    <key>ProgramArguments</key>\n"
+        "    <array>\n"
+        f"        <string>{bin_path}</string>\n"
+        "        <string>slack</string>\n"
+        "    </array>\n"
+        f"    <key>WorkingDirectory</key>\n    <string>{working_dir}</string>\n"
+        "    <key>RunAtLoad</key>\n    <true/>\n"
+        "    <key>KeepAlive</key>\n    <true/>\n"
+        f"    <key>StandardOutPath</key>\n    <string>{log_dir}/listener.log</string>\n"
+        f"    <key>StandardErrorPath</key>\n    <string>{log_dir}/listener.err</string>\n"
+        "    <key>EnvironmentVariables</key>\n"
+        "    <dict>\n"
+        "        <key>PATH</key>\n"
+        "        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>\n"
+        "    </dict>\n"
+        "</dict>\n"
+        "</plist>\n"
+    )
+
+
 def _plist_path(cadence: Cadence) -> Path:
     return LAUNCH_AGENTS_DIR / f"{LABEL_PREFIX}.{cadence.value}.plist"
+
+
+def _listener_plist_path() -> Path:
+    return LAUNCH_AGENTS_DIR / f"{LISTENER_LABEL}.plist"
 
 
 def _resolve_bin() -> str:
@@ -95,6 +134,19 @@ def _resolve_bin() -> str:
         return str(candidate)
     console.print("[red]`news-agent` not found. Activate the venv or `uv sync`.[/red]")
     raise typer.Exit(1)
+
+
+def _load_plist(path: Path, label: str) -> None:
+    """Idempotent load: unload first, then load. Echo result."""
+    subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
+    result = subprocess.run(
+        ["launchctl", "load", str(path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]load failed[/red] {label}: {result.stderr.strip()}")
+    else:
+        console.print(f"[green]installed[/green] {label}  →  {path}")
 
 
 @schedule_app.command()
@@ -113,29 +165,32 @@ def install() -> None:
             working_dir=working_dir,
             log_dir=str(LOG_DIR),
         ))
-        # Unload first in case already loaded (idempotent install).
-        subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
-        result = subprocess.run(
-            ["launchctl", "load", str(path)],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            console.print(f"[red]load failed[/red] {cadence.value}: {result.stderr.strip()}")
-        else:
-            console.print(f"[green]installed[/green] {cadence.value}  →  {path}")
+        _load_plist(path, cadence.value)
+
+    listener_path = _listener_plist_path()
+    listener_path.write_text(generate_listener_plist(
+        bin_path=bin_path,
+        working_dir=working_dir,
+        log_dir=str(LOG_DIR),
+    ))
+    _load_plist(listener_path, "listener")
 
 
 @schedule_app.command()
 def uninstall() -> None:
     """Unload and delete plists."""
     for cadence in _SCHEDULED_CADENCES:
-        path = _plist_path(cadence)
-        if path.exists():
-            subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
-            path.unlink()
-            console.print(f"[yellow]removed[/yellow] {cadence.value}")
-        else:
-            console.print(f"[dim]not installed[/dim] {cadence.value}")
+        _remove_plist(_plist_path(cadence), cadence.value)
+    _remove_plist(_listener_plist_path(), "listener")
+
+
+def _remove_plist(path: Path, label: str) -> None:
+    if path.exists():
+        subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
+        path.unlink()
+        console.print(f"[yellow]removed[/yellow] {label}")
+    else:
+        console.print(f"[dim]not installed[/dim] {label}")
 
 
 @schedule_app.command()
@@ -155,16 +210,20 @@ def status() -> None:
 def restart() -> None:
     """Unload + load every installed job."""
     for cadence in _SCHEDULED_CADENCES:
-        path = _plist_path(cadence)
-        if not path.exists():
-            console.print(f"[dim]not installed[/dim] {cadence.value}")
-            continue
-        subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
-        result = subprocess.run(
-            ["launchctl", "load", str(path)],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            console.print(f"[green]restarted[/green] {cadence.value}")
-        else:
-            console.print(f"[red]restart failed[/red] {cadence.value}: {result.stderr.strip()}")
+        _restart_plist(_plist_path(cadence), cadence.value)
+    _restart_plist(_listener_plist_path(), "listener")
+
+
+def _restart_plist(path: Path, label: str) -> None:
+    if not path.exists():
+        console.print(f"[dim]not installed[/dim] {label}")
+        return
+    subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
+    result = subprocess.run(
+        ["launchctl", "load", str(path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        console.print(f"[green]restarted[/green] {label}")
+    else:
+        console.print(f"[red]restart failed[/red] {label}: {result.stderr.strip()}")

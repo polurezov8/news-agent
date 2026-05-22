@@ -5,14 +5,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from news_agent.core.types import Cadence, SurfaceRef
-from news_agent.notifier.base import RecapPayload
+from news_agent.core.types import Cadence, CorrectionKind, SurfaceRef, TopicId
+from news_agent.notifier.base import RecapPayload, WeeklyStats
 from news_agent.pipeline.graph import PipelineDeps
 from news_agent.storage.repository import (
     connect,
+    count_corrections_by_kind,
+    count_distinct_run_days,
+    count_surfaces_in_window,
     query_skipped_high,
     query_top_scored,
     save_surface,
+    top_sources_in_window,
 )
 
 
@@ -31,6 +35,15 @@ def run_weekly_recap(deps: PipelineDeps, *, window_days: int = 7) -> int:
     try:
         top = query_top_scored(conn, since=since, limit=10)
         skipped = query_skipped_high(conn, since=since, min_score=0.85, limit=20)
+        stats = WeeklyStats(
+            runs=count_distinct_run_days(conn, since=since, cadence=Cadence.DAILY),
+            surfaced=count_surfaces_in_window(conn, since=since, cadence=Cadence.DAILY),
+            boosted=count_corrections_by_kind(conn, since=since, kind=CorrectionKind.BOOST),
+            demoted=count_corrections_by_kind(conn, since=since, kind=CorrectionKind.DEMOTE),
+            top_sources=top_sources_in_window(
+                conn, since=since, cadence=Cadence.DAILY, limit=3,
+            ),
+        )
     finally:
         conn.close()
 
@@ -40,7 +53,17 @@ def run_weekly_recap(deps: PipelineDeps, *, window_days: int = 7) -> int:
         deps.log("recap: nothing to post")
         return 0
 
-    payload = RecapPayload(top_items=top, skipped_but_high=skipped, window_days=window_days)
+    topic_labels = {
+        TopicId(tid): (tcfg.emoji, tcfg.label)
+        for tid, tcfg in deps.topics_cfg.topics.items()
+    }
+    payload = RecapPayload(
+        top_items=top,
+        skipped_but_high=skipped,
+        window_days=window_days,
+        topic_labels=topic_labels,
+        stats=stats,
+    )
     ref: SurfaceRef = deps.notifier.post_recap(payload)
 
     conn = connect(deps.db_path)

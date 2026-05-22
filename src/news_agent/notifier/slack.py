@@ -17,18 +17,21 @@ from news_agent.core.types import (
     SurfaceRef,
     TopicId,
 )
-from news_agent.notifier.base import DigestPayload, PriorityPayload, RecapPayload
+from news_agent.notifier._time import relative_time
+from news_agent.notifier.base import (
+    DigestPayload,
+    PriorityPayload,
+    RecapPayload,
+    WeeklyStats,
+)
 
 
 def _counters_summary(counters: PipelineCounters) -> str:
-    """One-line funnel for the digest header context block."""
+    """Compact daily-digest footer: scanned · on topic · picks. No emojis."""
     return (
-        f"📥 {counters.fetched} fetched · "
-        f"🆕 {counters.new} new · "
-        f"🏷️ {counters.tagged} tagged · "
-        f"🎯 {counters.on_topic} on-topic · "
-        f"📊 {counters.scored} scored · "
-        f"✨ {counters.surfaced} surfaced"
+        f"{counters.fetched} scanned · "
+        f"{counters.on_topic} on topic · "
+        f"{counters.surfaced} picks"
     )
 
 
@@ -79,94 +82,141 @@ def _btn(
     return el
 
 
+_EDITOR_LABEL = "*⭐️  EDITOR'S PICK*"
+_ALSO_LABEL = "*✨  ALSO TODAY*"
+
+
+def _label_context(text: str) -> dict:
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
+
+
+def _item_section(
+    article: Article,
+    score: ScoreResult,
+    topic_labels: dict[TopicId, tuple[str, str]],
+    *,
+    now: datetime,
+) -> dict:
+    title_safe = _safe_link_text(article.title)
+    _emoji, topic_label = topic_labels.get(score.topic, ("", str(score.topic)))
+    meta = f"{article.source} · {topic_label} · {relative_time(article.published_at, now=now)}"
+    return {
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"*<{article.url}|{title_safe}>*\n_{meta}_",
+        },
+    }
+
+
 def digest_blocks(payload: DigestPayload) -> list[dict]:
-    """Block Kit blocks for a full digest grouped by topic."""
+    """Block Kit blocks for the Apple-style daily digest.
+
+    Header (date) → EDITOR'S PICK label → highest-final section →
+    ALSO TODAY label (if 2+ items) → remaining sections by final desc →
+    compact footer (if counters set).
+    """
+    now = datetime.now(timezone.utc)
     blocks: list[dict] = [
         {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": f"📰 Daily Digest — {datetime.now(timezone.utc).strftime('%B %d, %Y')}",
+                "text": now.strftime("%A, %B %-d"),
                 "emoji": True,
             },
         }
     ]
 
+    ranked = sorted(payload.items, key=lambda x: x[1].final, reverse=True)
+    if not ranked:
+        return blocks
+
+    blocks.append(_label_context(_EDITOR_LABEL))
+    blocks.append(_item_section(ranked[0][0], ranked[0][1], payload.topic_labels, now=now))
+
+    if len(ranked) > 1:
+        blocks.append(_label_context(_ALSO_LABEL))
+        for article, score in ranked[1:]:
+            blocks.append(_item_section(article, score, payload.topic_labels, now=now))
+
     if payload.counters is not None:
-        blocks.append({
-            "type": "context",
-            "elements": [
-                {"type": "mrkdwn", "text": _counters_summary(payload.counters)},
-            ],
-        })
-
-    by_topic: dict[TopicId, list[tuple[Article, ScoreResult]]] = {}
-    for article, score in payload.items:
-        by_topic.setdefault(score.topic, []).append((article, score))
-
-    for topic in payload.topic_order:
-        items = by_topic.get(topic, [])
-        if not items:
-            continue
-        emoji, label = payload.topic_labels.get(topic, ("", str(topic)))
-        header_text = f"{emoji} *{label}*".strip()
-        blocks.append({"type": "divider"})
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header_text}})
-        for article, score in items:
-            blocks.extend(_article_blocks(article, score))
+        blocks.append(_label_context(_counters_summary(payload.counters)))
 
     return blocks
 
 
+_PRIORITY_LABEL = "*🔔  PRIORITY*"
+
+
 def priority_blocks(payload: PriorityPayload) -> list[dict]:
-    """Block Kit blocks for a priority DM."""
+    """Apple-style priority DM: label + single item section. No actions, no score bar."""
+    now = datetime.now(timezone.utc)
     return [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": "🔔 Priority Item", "emoji": True},
-        },
-        *_article_blocks(payload.article, payload.score),
+        _label_context(_PRIORITY_LABEL),
+        _item_section(payload.article, payload.score, payload.topic_labels, now=now),
     ]
 
 
+_TOP_WEEK_LABEL = "*⭐️  TOP THIS WEEK*"
+_SKIPPED_LABEL = "*💭  HIGH-SCORE BUT SKIPPED*"
+
+
+def _weekly_stats_footer(stats: "WeeklyStats") -> str:
+    parts = [
+        f"{stats.runs} runs",
+        f"{stats.surfaced} surfaced",
+        f"{stats.boosted} boosted",
+        f"{stats.demoted} demoted",
+    ]
+    if stats.top_sources:
+        top_names = ", ".join(s for s, _ in stats.top_sources)
+        parts.append(f"top sources: {top_names}")
+    return " · ".join(parts)
+
+
 def recap_blocks(payload: RecapPayload) -> list[dict]:
-    """Block Kit blocks for a weekly recap."""
+    """Apple-style weekly recap: header date, TOP/SKIPPED labels, weekly stats footer."""
+    now = datetime.now(timezone.utc)
     blocks: list[dict] = [
         {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": f"📊 Weekly Recap — last {payload.window_days} days",
+                "text": f"{now.strftime('%a, %b %-d')} — week recap",
                 "emoji": True,
             },
-        },
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top {len(payload.top_items)} this week:*"}},
+        }
     ]
-    for article, score in payload.top_items:
-        blocks.extend(_article_blocks(article, score))
+
+    if payload.top_items:
+        blocks.append(_label_context(_TOP_WEEK_LABEL))
+        for article, score in payload.top_items:
+            blocks.append(_item_section(article, score, payload.topic_labels, now=now))
 
     if payload.skipped_but_high:
-        blocks.append({"type": "divider"})
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*High-score but skipped ({len(payload.skipped_but_high)}):*"},
-        })
+        blocks.append(_label_context(_SKIPPED_LABEL))
         for article, score in payload.skipped_but_high:
-            blocks.extend(_article_blocks(article, score))
+            blocks.append(_item_section(article, score, payload.topic_labels, now=now))
+
+    if payload.stats is not None:
+        blocks.append(_label_context(_weekly_stats_footer(payload.stats)))
 
     return blocks
 
 
 def _demo_payload() -> DigestPayload:
     """Sample payload for `/news demo` and unit tests."""
+    from datetime import timedelta
+
     now = datetime.now(timezone.utc)
     rows = [
-        ("demo:aaa111bbb222cccc", "hn", "Demo: What I Learned Shipping a Solo Product", "https://news.ycombinator.com/item?id=1", "topic_a", 0.87),
-        ("demo:ddd333eee444ffff", "arxiv", "Demo: Scaling Laws for Neural Language Models", "https://arxiv.org/abs/2001.08361", "topic_a", 0.74),
-        ("demo:ggg555hhh666iiii", "lobsters", "Demo: Writing a Compiler in 500 Lines", "https://lobste.rs/s/example", "topic_b", 0.61),
+        ("demo:aaa111bbb222cccc", "hn", "Demo: What I Learned Shipping a Solo Product", "https://news.ycombinator.com/item?id=1", "ai", 0.87, timedelta(minutes=20)),
+        ("demo:ddd333eee444ffff", "arxiv", "Demo: Scaling Laws for Neural Language Models", "https://arxiv.org/abs/2001.08361", "ai", 0.74, timedelta(hours=4)),
+        ("demo:ggg555hhh666iiii", "lobsters", "Demo: Writing a Compiler in 500 Lines", "https://lobste.rs/s/example", "ios", 0.61, timedelta(days=2)),
     ]
     items: list[tuple[Article, ScoreResult]] = []
-    for aid, src, title, url, topic, final in rows:
+    for aid, src, title, url, topic, final, age in rows:
         ch = ContentHash(aid.split(":")[1])
         article = Article(
             id=ArticleId(aid),
@@ -175,7 +225,7 @@ def _demo_payload() -> DigestPayload:
             title=title,
             body="",
             content_hash=ch,
-            published_at=now,
+            published_at=now - age,
             fetched_at=now,
         )
         score = ScoreResult(
@@ -189,7 +239,17 @@ def _demo_payload() -> DigestPayload:
         )
         items.append((article, score))
 
-    return DigestPayload(items=items, topic_order=[TopicId("topic_a"), TopicId("topic_b")])
+    return DigestPayload(
+        items=items,
+        topic_order=[TopicId("ai"), TopicId("ios")],
+        topic_labels={
+            TopicId("ai"): ("🤖", "AI"),
+            TopicId("ios"): ("📱", "iOS"),
+        },
+        counters=PipelineCounters(
+            fetched=1531, new=11, tagged=11, on_topic=9, scored=9, surfaced=3,
+        ),
+    )
 
 
 @dataclass

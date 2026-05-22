@@ -38,7 +38,6 @@ from news_agent.sources import make_source
 from news_agent.storage.repository import (
     article_exists_by_hash,
     connect,
-    get_source_prior,
     has_surface,
     load_priors_dict,
     monthly_usd_cents,
@@ -309,43 +308,54 @@ def build_graph(deps: PipelineDeps):
                 "counters": _bump(state["counters"], surfaced=len(priority)),
             }
 
-        # daily: top-N per topic for digest, sorted by final desc, gated by min_score
-        counts: dict[str, int] = {}
+        # Daily digest: hard global cap of 3 items.
+        # Phase 1: trusted-source guarantees fill first, sorted by publish recency.
+        # Phase 2: remaining slots filled by quality (top final among min_score survivors).
+        DIGEST_CAP = 3
         chosen: list[tuple[Article, ScoreResult]] = []
         chosen_ids: set[str] = set()
-        for item in sorted(digest, key=lambda x: x[1].final, reverse=True):
-            tid = str(item[1].topic)
-            topic_cfg = deps.topics_cfg.topics.get(tid)
-            if topic_cfg is None:
-                continue
-            if item[1].final < topic_cfg.delivery.digest_min_score:
-                continue
-            if counts.get(tid, 0) >= topic_cfg.delivery.digest_top_n:
-                continue
-            chosen.append(item)
-            chosen_ids.add(str(item[0].id))
-            counts[tid] = counts.get(tid, 0) + 1
 
-        # Source-level guarantees: ensure ≥min_in_digest items from each opted-in source,
-        # bypassing min_score floor and top-N cap. Sorted by publish recency: trusted
-        # curated channels (daily Telegram, single-author X) earn the slot by being NEW,
-        # not by winning a substance contest against deep blog posts.
+        guaranteed_pool: list[tuple[Article, ScoreResult]] = []
         for src_cfg in deps.sources_cfg.sources:
             if src_cfg.min_in_digest <= 0:
                 continue
-            already = sum(1 for a, _ in chosen if str(a.source) == src_cfg.id)
-            needed = src_cfg.min_in_digest - already
-            if needed <= 0:
-                continue
-            candidates = sorted(
-                [(a, sr) for a, sr in digest
-                 if str(a.source) == src_cfg.id and str(a.id) not in chosen_ids],
+            src_items = sorted(
+                [(a, sr) for a, sr in digest if str(a.source) == src_cfg.id],
                 key=lambda x: x[0].published_at,
                 reverse=True,
             )
-            for item in candidates[:needed]:
-                chosen.append(item)
+            # Walk the full list, counting DISTINCT article IDs. A multi-topic
+            # source can otherwise burn its quota on duplicates of the same article.
+            distinct_added = 0
+            for item in src_items:
+                if distinct_added >= src_cfg.min_in_digest:
+                    break
+                if str(item[0].id) in chosen_ids:
+                    continue
+                guaranteed_pool.append(item)
                 chosen_ids.add(str(item[0].id))
+                distinct_added += 1
+
+        # If guarantees alone exceed the cap, keep the globally-newest.
+        guaranteed_pool.sort(key=lambda x: x[0].published_at, reverse=True)
+        chosen.extend(guaranteed_pool[:DIGEST_CAP])
+        chosen_ids = {str(a.id) for a, _ in chosen}
+
+        remaining = DIGEST_CAP - len(chosen)
+        if remaining > 0:
+            quality_candidates: list[tuple[Article, ScoreResult]] = []
+            for item in digest:
+                if str(item[0].id) in chosen_ids:
+                    continue
+                tid = str(item[1].topic)
+                topic_cfg = deps.topics_cfg.topics.get(tid)
+                if topic_cfg is None:
+                    continue
+                if item[1].final < topic_cfg.delivery.digest_min_score:
+                    continue
+                quality_candidates.append(item)
+            quality_candidates.sort(key=lambda x: x[1].final, reverse=True)
+            chosen.extend(quality_candidates[:remaining])
 
         deps.log(f"route[daily]: digest={len(chosen)} priority={len(priority)}")
         return {
@@ -380,9 +390,17 @@ def build_graph(deps: PipelineDeps):
                 for article, sr in state["digest_items"]:
                     save_surface(conn, sr.article, sr.topic, ref, Cadence.DAILY)
 
+            priority_topic_labels = {
+                TopicId(tid): (tcfg.emoji, tcfg.label)
+                for tid, tcfg in deps.topics_cfg.topics.items()
+            }
             for article, sr in state["priority_items"]:
                 ref = deps.notifier.dm_priority(
-                    PriorityPayload(article=article, score=sr)
+                    PriorityPayload(
+                        article=article,
+                        score=sr,
+                        topic_labels=priority_topic_labels,
+                    )
                 )
                 refs.append(ref)
                 save_surface(conn, sr.article, sr.topic, ref, Cadence.PRIORITY)

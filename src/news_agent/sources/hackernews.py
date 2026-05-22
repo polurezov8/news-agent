@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, Protocol
+from typing import Protocol
 
 from news_agent.config.schema import SourceConfig
 from news_agent.core.identity import content_hash, make_article_id

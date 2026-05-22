@@ -526,7 +526,7 @@ wheels = [
 
 [[package]]
 name = "news-agent"
-version = "0.1.0"
+version = "1.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "feedparser" },
