@@ -6,7 +6,7 @@ topics:
     emoji: 🤖
     query:
       must_have_any: [ai_research, llm, ai_tools, ai_safety]
-      must_not_have: [promo, listicle]
+      must_not_have: [listicle]
       boost:
         - { tags: [hands_on, first_person], weight: 0.2 }
         - { tags: [paper, data_driven], weight: 0.15 }
@@ -29,7 +29,7 @@ topics:
     emoji: 📱
     query:
       must_have_any: [ios_engineering, swift, swiftui, tca, apple_ecosystem]
-      must_not_have: [promo, listicle]
+      must_not_have: [listicle]
       boost:
         - { tags: [tca, hands_on], weight: 0.25 }
         - { tags: [swift, tutorial], weight: 0.1 }
@@ -52,7 +52,7 @@ topics:
     emoji: 🧭
     query:
       must_have_any: [eng_leadership, eng_management, product, growth, dev_productivity]
-      must_not_have: [promo, listicle]
+      must_not_have: [listicle]
       boost:
         - { tags: [first_person, retrospective], weight: 0.3 }
         - { tags: [data_driven], weight: 0.15 }

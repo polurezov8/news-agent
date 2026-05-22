@@ -64,6 +64,7 @@ sources:
     topics: [ios, eng_leadership]
     weight: 0.85
     enabled: true
+    min_in_digest: 1                  # trusted single-author feed; guarantee newest
 
   - id: safari_reading_list
     type: safari_reading_list
@@ -82,11 +83,13 @@ sources:
     topics: [ai]
     weight: 0.9
     enabled: true
+    min_in_digest: 1                  # trusted single-author feed; guarantee newest
 
   - id: tg_ios_devs_ua
     type: rsshub
     config:
       route: /telegram/channel/iOSDevsUA
-    topics: [ios]
+    topics: [ios, ai]                 # AI tool posts route to ai topic
     weight: 0.85
     enabled: true
+    min_in_digest: 1                  # hand-curated daily channel; guarantee newest

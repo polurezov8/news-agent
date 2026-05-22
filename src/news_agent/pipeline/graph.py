@@ -327,7 +327,9 @@ def build_graph(deps: PipelineDeps):
             counts[tid] = counts.get(tid, 0) + 1
 
         # Source-level guarantees: ensure ≥min_in_digest items from each opted-in source,
-        # bypassing min_score floor and top-N cap.
+        # bypassing min_score floor and top-N cap. Sorted by publish recency: trusted
+        # curated channels (daily Telegram, single-author X) earn the slot by being NEW,
+        # not by winning a substance contest against deep blog posts.
         for src_cfg in deps.sources_cfg.sources:
             if src_cfg.min_in_digest <= 0:
                 continue
@@ -338,7 +340,7 @@ def build_graph(deps: PipelineDeps):
             candidates = sorted(
                 [(a, sr) for a, sr in digest
                  if str(a.source) == src_cfg.id and str(a.id) not in chosen_ids],
-                key=lambda x: x[1].final,
+                key=lambda x: x[0].published_at,
                 reverse=True,
             )
             for item in candidates[:needed]:
