@@ -16,6 +16,7 @@ console = Console()
 
 LABEL_PREFIX = "com.polurezov.news-agent"
 LISTENER_LABEL = f"{LABEL_PREFIX}.listener"
+BACKUP_LABEL = f"{LABEL_PREFIX}.backup"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 LOG_DIR = Path.home() / "Library" / "Logs" / "news-agent"
 
@@ -115,12 +116,54 @@ def generate_listener_plist(
     )
 
 
+def generate_backup_plist(
+    *,
+    bin_path: str,
+    working_dir: str,
+    log_dir: str,
+) -> str:
+    """Daily 09:00 backup of news_agent.db."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        f"    <key>Label</key>\n    <string>{BACKUP_LABEL}</string>\n"
+        "    <key>ProgramArguments</key>\n"
+        "    <array>\n"
+        f"        <string>{bin_path}</string>\n"
+        "        <string>backup</string>\n"
+        "    </array>\n"
+        f"    <key>WorkingDirectory</key>\n    <string>{working_dir}</string>\n"
+        "    <key>StartCalendarInterval</key>\n"
+        "    <dict>\n"
+        "        <key>Hour</key><integer>9</integer>\n"
+        "        <key>Minute</key><integer>0</integer>\n"
+        "    </dict>\n"
+        f"    <key>StandardOutPath</key>\n    <string>{log_dir}/backup.log</string>\n"
+        f"    <key>StandardErrorPath</key>\n    <string>{log_dir}/backup.err</string>\n"
+        "    <key>RunAtLoad</key><false/>\n"
+        "    <key>EnvironmentVariables</key>\n"
+        "    <dict>\n"
+        "        <key>PATH</key>\n"
+        "        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>\n"
+        "    </dict>\n"
+        "</dict>\n"
+        "</plist>\n"
+    )
+
+
 def _plist_path(cadence: Cadence) -> Path:
     return LAUNCH_AGENTS_DIR / f"{LABEL_PREFIX}.{cadence.value}.plist"
 
 
 def _listener_plist_path() -> Path:
     return LAUNCH_AGENTS_DIR / f"{LISTENER_LABEL}.plist"
+
+
+def _backup_plist_path() -> Path:
+    return LAUNCH_AGENTS_DIR / f"{BACKUP_LABEL}.plist"
 
 
 def _resolve_bin() -> str:
@@ -175,6 +218,14 @@ def install() -> None:
     ))
     _load_plist(listener_path, "listener")
 
+    backup_path = _backup_plist_path()
+    backup_path.write_text(generate_backup_plist(
+        bin_path=bin_path,
+        working_dir=working_dir,
+        log_dir=str(LOG_DIR),
+    ))
+    _load_plist(backup_path, "backup")
+
 
 @schedule_app.command()
 def uninstall() -> None:
@@ -182,6 +233,7 @@ def uninstall() -> None:
     for cadence in _SCHEDULED_CADENCES:
         _remove_plist(_plist_path(cadence), cadence.value)
     _remove_plist(_listener_plist_path(), "listener")
+    _remove_plist(_backup_plist_path(), "backup")
 
 
 def _remove_plist(path: Path, label: str) -> None:
@@ -212,6 +264,7 @@ def restart() -> None:
     for cadence in _SCHEDULED_CADENCES:
         _restart_plist(_plist_path(cadence), cadence.value)
     _restart_plist(_listener_plist_path(), "listener")
+    _restart_plist(_backup_plist_path(), "backup")
 
 
 def _restart_plist(path: Path, label: str) -> None:

@@ -73,6 +73,10 @@ class PipelineDeps:
     cadence: Cadence = Cadence.DAILY                # DAILY | PRIORITY (WEEKLY runs outside the graph)
     budget_usd: float = 5.0                         # monthly cap; pipeline bails if exceeded
     log: Callable[[str], None] = print
+    # When True: fetch + tag + score still happen (LLM calls are real and billed),
+    # but no article/tag/score/surface rows are persisted and no Slack messages
+    # are posted. Use for prompt/topic regression tests without polluting state.
+    dry_run: bool = False
 
 
 def empty_state() -> PipelineState:
@@ -181,18 +185,21 @@ def build_graph(deps: PipelineDeps):
         )
         articles_by_id = {str(a.id): a for a in state["new_articles"]}
         now = datetime.now(timezone.utc)
-        conn = connect(deps.db_path)
-        try:
-            for r in results:
-                article = articles_by_id.get(str(r.article))
-                if article is None:
-                    continue
-                upsert_article(conn, article)
-                save_tag_result(conn, r, now, category_lookup=cat_lookup)
-            conn.commit()
-        finally:
-            conn.close()
-        deps.log(f"tag: {len(results)} articles tagged + persisted")
+        if deps.dry_run:
+            deps.log(f"tag: {len(results)} articles tagged (dry-run, not persisted)")
+        else:
+            conn = connect(deps.db_path)
+            try:
+                for r in results:
+                    article = articles_by_id.get(str(r.article))
+                    if article is None:
+                        continue
+                    upsert_article(conn, article)
+                    save_tag_result(conn, r, now, category_lookup=cat_lookup)
+                conn.commit()
+            finally:
+                conn.close()
+            deps.log(f"tag: {len(results)} articles tagged + persisted")
         return {
             "tag_map": {str(r.article): r.tags for r in results},
             "counters": _bump(state["counters"], tagged=len(results)),
@@ -250,14 +257,13 @@ def build_graph(deps: PipelineDeps):
             )
             # Open the connection only after the LLM call returns, so we don't
             # hold a writer while CountingClient writes its cost row.
-            conn = connect(deps.db_path)
-            try:
+            if deps.dry_run:
                 for (article_id, article, tags), substance in zip(items, substances):
                     adj = tag_adjustment(tags, topic_cfg)
                     d = decay_factor(article.published_at, topic_cfg.recency.half_life_days)
                     sw = _source_weight(article.source, TopicId(topic_id))
                     final = compute_final(substance, adj, d, sw)
-                    sr = ScoreResult(
+                    results.append(ScoreResult(
                         article=ArticleId(article_id),
                         topic=TopicId(topic_id),
                         substance=substance,
@@ -265,78 +271,98 @@ def build_graph(deps: PipelineDeps):
                         decay=d,
                         source_weight=sw,
                         final=final,
-                    )
-                    save_score(conn, sr, now)
-                    results.append(sr)
-                conn.commit()
-            finally:
-                conn.close()
+                    ))
+            else:
+                conn = connect(deps.db_path)
+                try:
+                    for (article_id, article, tags), substance in zip(items, substances):
+                        adj = tag_adjustment(tags, topic_cfg)
+                        d = decay_factor(article.published_at, topic_cfg.recency.half_life_days)
+                        sw = _source_weight(article.source, TopicId(topic_id))
+                        final = compute_final(substance, adj, d, sw)
+                        sr = ScoreResult(
+                            article=ArticleId(article_id),
+                            topic=TopicId(topic_id),
+                            substance=substance,
+                            tag_adj=adj,
+                            decay=d,
+                            source_weight=sw,
+                            final=final,
+                        )
+                        save_score(conn, sr, now)
+                        results.append(sr)
+                    conn.commit()
+                finally:
+                    conn.close()
         deps.log(f"score: {len(results)} pairs scored ({len(by_topic)} batches)")
         return {"score_results": results, "counters": _bump(state["counters"], scored=len(results))}
 
     def route(state: PipelineState) -> dict:
+        from .routing import route_to_surface
+
         article_by_id = {str(a.id): a for a in state["new_articles"]}
         now = datetime.now(timezone.utc)
-        digest: list[tuple[Article, ScoreResult]] = []
-        priority: list[tuple[Article, ScoreResult]] = []
 
+        # Pre-fetch the set of (article_id, topic_id) pairs already DM'd as
+        # priority. Keeps route_to_surface pure (no DB dependency).
+        candidate_keys: set[tuple[str, str]] = set()
         for sr in state["score_results"]:
-            article = article_by_id.get(str(sr.article))
             topic_cfg = deps.topics_cfg.topics.get(str(sr.topic))
-            if article is None or topic_cfg is None:
-                continue
-            age_h = (now - article.published_at).total_seconds() / 3600
-            d = topic_cfg.delivery
-            if sr.final >= d.priority_threshold and age_h <= d.priority_recency_hours:
-                priority.append((article, sr))
-            else:
-                digest.append((article, sr))
-
-        # Dedup priority against previously-DM'd articles (relevant for hourly priority runs).
-        conn = connect(deps.db_path)
-        try:
-            priority = [
-                item for item in priority
-                if not has_surface(conn, item[1].article, item[1].topic, Cadence.PRIORITY)
-            ]
-        finally:
-            conn.close()
-
-        if deps.cadence is Cadence.PRIORITY:
-            deps.log(f"route[priority]: {len(priority)} new priority items (digest suppressed)")
-            return {
-                "digest_items": [],
-                "priority_items": priority,
-                "counters": _bump(state["counters"], surfaced=len(priority)),
-            }
-
-        # Daily digest: pure quality routing, hard global cap of 3 items.
-        # Each (article, topic) pair must clear topic.delivery.digest_min_score;
-        # the top finals (by score) fill up to the cap. If nothing clears, the
-        # digest is empty and notify stays silent — quality over noise.
-        DIGEST_CAP = 3
-        quality_candidates: list[tuple[Article, ScoreResult]] = []
-        for item in digest:
-            tid = str(item[1].topic)
-            topic_cfg = deps.topics_cfg.topics.get(tid)
             if topic_cfg is None:
                 continue
-            if item[1].final < topic_cfg.delivery.digest_min_score:
+            d = topic_cfg.delivery
+            article = article_by_id.get(str(sr.article))
+            if article is None:
                 continue
-            quality_candidates.append(item)
-        quality_candidates.sort(key=lambda x: x[1].final, reverse=True)
-        chosen = quality_candidates[:DIGEST_CAP]
+            age_h = (now - article.published_at).total_seconds() / 3600
+            if sr.final >= d.priority_threshold and age_h <= d.priority_recency_hours:
+                candidate_keys.add((str(sr.article), str(sr.topic)))
 
-        deps.log(f"route[daily]: digest={len(chosen)} priority={len(priority)}")
+        prior_surfaces: set[tuple[str, str]] = set()
+        if candidate_keys:
+            conn = connect(deps.db_path)
+            try:
+                for aid, tid in candidate_keys:
+                    if has_surface(conn, ArticleId(aid), TopicId(tid), Cadence.PRIORITY):
+                        prior_surfaces.add((aid, tid))
+            finally:
+                conn.close()
+
+        result = route_to_surface(
+            score_results=state["score_results"],
+            articles_by_id=article_by_id,
+            topics_cfg=deps.topics_cfg,
+            cadence=deps.cadence,
+            now=now,
+            prior_priority_surfaces=frozenset(prior_surfaces),
+        )
+
+        if deps.cadence is Cadence.PRIORITY:
+            deps.log(
+                f"route[priority]: {len(result.priority_items)} new priority items (digest suppressed)"
+            )
+            return {
+                "digest_items": [],
+                "priority_items": result.priority_items,
+                "counters": _bump(state["counters"], surfaced=len(result.priority_items)),
+            }
+
+        deps.log(
+            f"route[daily]: digest={len(result.digest_items)} priority={len(result.priority_items)}"
+        )
         return {
-            "digest_items": chosen,
-            "priority_items": priority,
-            "counters": _bump(state["counters"], surfaced=len(chosen) + len(priority)),
+            "digest_items": result.digest_items,
+            "priority_items": result.priority_items,
+            "counters": _bump(
+                state["counters"],
+                surfaced=len(result.digest_items) + len(result.priority_items),
+            ),
         }
 
     def notify(state: PipelineState) -> dict:
-        if deps.notifier is None:
-            deps.log("notify: skipped (dry-run)")
+        if deps.dry_run or deps.notifier is None:
+            reason = "dry-run" if deps.dry_run else "no notifier"
+            deps.log(f"notify: skipped ({reason})")
             return {"surface_refs": []}
 
         refs: list[SurfaceRef] = []

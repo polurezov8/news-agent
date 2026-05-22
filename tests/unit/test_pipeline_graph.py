@@ -475,3 +475,69 @@ def test_dedup_skips_already_persisted(monkeypatch, tmp_path: Path, configs):
     assert len(state["raw_articles"]) == 2
     assert len(state["new_articles"]) == 1                  # seeded one filtered out
     assert state["new_articles"][0].title == "AI new"
+
+
+def test_dry_run_does_not_persist(monkeypatch, tmp_path: Path, configs):
+    """Dry-run: pipeline computes scores but writes no articles/tags/scores/surfaces,
+    and skips notifier even when one is supplied."""
+    tags_cfg, topics_cfg, sources_cfg, priors_cfg = configs
+    db_path = tmp_path / "t.db"
+
+    from news_agent.storage.repository import connect, init_db
+
+    init_db(db_path)
+
+    class _Src:
+        id = SourceId("fakesrc")
+        topics = [Tag("topic_a")]
+        weight = 1.0
+
+        def fetch(self):
+            return [_article("fakesrc:0000000000aaaaaa", title="AI dry one")]
+
+    monkeypatch.setattr("news_agent.pipeline.graph.make_source", lambda _: _Src())
+    monkeypatch.setattr(
+        "news_agent.llm.tagger.tag_articles",
+        lambda articles, cfg, *, model, client=None: [
+            TagResult(article=a.id, tags=frozenset([Tag("ai")]), confidence=1.0, model=model)
+            for a in articles
+        ],
+    )
+    monkeypatch.setattr(
+        "news_agent.llm.scorer.score_batch_for_topic",
+        lambda items, topic, **k: [0.9] * len(items),
+    )
+    monkeypatch.setattr("news_agent.llm.scorer._client", lambda m: object())
+
+    from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
+
+    notifier = _RecordingNotifier()
+    deps = PipelineDeps(
+        sources_cfg=sources_cfg, topics_cfg=topics_cfg,
+        tags_cfg=tags_cfg, priors_cfg=priors_cfg,
+        db_path=db_path, notifier=notifier,
+        log=lambda msg: None,
+        dry_run=True,
+    )
+    state = build_graph(deps).invoke(empty_state())
+
+    # Pipeline still computes results in-memory.
+    assert len(state["score_results"]) == 1
+    assert len(state["digest_items"]) == 1
+    # But no rows persisted.
+    conn = connect(db_path)
+    try:
+        articles_n = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        tags_n = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+        scores_n = conn.execute("SELECT COUNT(*) FROM scores").fetchone()[0]
+        surfaces_n = conn.execute("SELECT COUNT(*) FROM surfaces").fetchone()[0]
+    finally:
+        conn.close()
+    assert articles_n == 0
+    assert tags_n == 0
+    assert scores_n == 0
+    assert surfaces_n == 0
+    assert state["surface_refs"] == []
+    # Notifier must be skipped even when supplied.
+    assert notifier.digests == []
+    assert notifier.priorities == []

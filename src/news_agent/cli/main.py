@@ -39,6 +39,10 @@ def run(
         help="daily | priority | weekly",
     ),
     no_slack: bool = typer.Option(False, "--no-slack", help="Skip Slack delivery. LLM calls + DB writes still happen."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Preview the run without persisting articles/tags/scores or posting to Slack. LLM calls are still real and billed.",
+    ),
 ) -> None:
     """Run the pipeline: ingest → dedup → tag → filter → score → route → notify."""
     import os
@@ -86,7 +90,7 @@ def run(
             raise typer.Exit(1)
 
     notifier = None
-    if not no_slack:
+    if not no_slack and not dry_run:
         missing = [v for v in ("SLACK_BOT_TOKEN", "SLACK_USER_ID") if not os.environ.get(v)]
         if missing:
             console.print(f"[red]Missing env vars: {', '.join(missing)}. Use --no-slack to skip Slack delivery.[/red]")
@@ -107,22 +111,28 @@ def run(
         cadence=cadence_enum,
         budget_usd=float(os.environ.get("NEWS_AGENT_BUDGET_USD", "5")),
         log=lambda msg: console.print(f"[dim]{msg}[/dim]"),
+        dry_run=dry_run,
     )
 
     if cadence_enum is Cadence.WEEKLY:
         from news_agent.pipeline.recap import run_weekly_recap
 
+        if dry_run:
+            console.print("[yellow]--dry-run not supported for weekly recap; skipping.[/yellow]")
+            return
         console.print("[cyan]Building weekly recap…[/cyan]")
         n = run_weekly_recap(deps)
         console.print(f"[green]Done.[/green] items={n}")
         return
 
-    console.print(f"[cyan]Running pipeline (cadence={cadence_enum.value}, no_slack={no_slack})…[/cyan]")
+    mode_suffix = ", dry-run" if dry_run else (", no_slack" if no_slack else "")
+    console.print(f"[cyan]Running pipeline (cadence={cadence_enum.value}{mode_suffix})…[/cyan]")
     graph = build_graph(deps)
     result = graph.invoke(empty_state())
 
+    done_label = "Done (dry-run)" if dry_run else "Done"
     console.print(
-        f"[green]Done.[/green] "
+        f"[green]{done_label}.[/green] "
         f"fetched={len(result['raw_articles'])} "
         f"new={len(result['new_articles'])} "
         f"scored={len(result['score_results'])} "
@@ -130,6 +140,12 @@ def run(
         f"priority={len(result['priority_items'])} "
         f"posted={len(result['surface_refs'])}"
     )
+    if dry_run and (result["digest_items"] or result["priority_items"]):
+        console.print("[dim]Would deliver:[/dim]")
+        for article, sr in result["digest_items"]:
+            console.print(f"  [bold]digest[/bold]  {sr.final:.2f}  {article.title}")
+        for article, sr in result["priority_items"]:
+            console.print(f"  [bold]priority[/bold]  {sr.final:.2f}  {article.title}")
 
 
 @app.command()
@@ -291,6 +307,29 @@ def doctor() -> None:
 def init() -> None:
     """Interactive setup wizard for tags, topics, sources."""
     console.print("[yellow]init wizard: not yet implemented[/yellow]")
+
+
+@app.command()
+def backup(
+    dest: str = typer.Option(
+        None, "--dest", help="Destination directory. Default: ~/Backups/news-agent (or $NEWS_AGENT_BACKUP_DIR)."
+    ),
+    keep: int = typer.Option(7, "--keep", help="Number of recent backups to retain."),
+) -> None:
+    """Hot-copy news_agent.db to a backup directory and rotate old copies."""
+    from pathlib import Path
+
+    from dotenv import load_dotenv
+
+    from news_agent.storage.backup import backup_db
+
+    load_dotenv()
+    try:
+        out = backup_db(dest_dir=Path(dest).expanduser() if dest else None, keep=keep)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Backup written:[/green] {out}")
 
 
 @app.command()
