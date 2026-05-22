@@ -238,18 +238,20 @@ def build_graph(deps: PipelineDeps):
 
         results: list[ScoreResult] = []
         now = datetime.now(timezone.utc)
-        conn = connect(deps.db_path)
-        try:
-            for topic_id, items in by_topic.items():
-                topic_cfg = deps.topics_cfg.topics.get(topic_id)
-                if topic_cfg is None:
-                    continue
-                substances = score_batch_for_topic(
-                    [(article, tags) for _aid, article, tags in items],
-                    topic_cfg,
-                    model=deps.scorer_model,
-                    client=scorer_client,
-                )
+        for topic_id, items in by_topic.items():
+            topic_cfg = deps.topics_cfg.topics.get(topic_id)
+            if topic_cfg is None:
+                continue
+            substances = score_batch_for_topic(
+                [(article, tags) for _aid, article, tags in items],
+                topic_cfg,
+                model=deps.scorer_model,
+                client=scorer_client,
+            )
+            # Open the connection only after the LLM call returns, so we don't
+            # hold a writer while CountingClient writes its cost row.
+            conn = connect(deps.db_path)
+            try:
                 for (article_id, article, tags), substance in zip(items, substances):
                     adj = tag_adjustment(tags, topic_cfg)
                     d = decay_factor(article.published_at, topic_cfg.recency.half_life_days)
@@ -266,9 +268,9 @@ def build_graph(deps: PipelineDeps):
                     )
                     save_score(conn, sr, now)
                     results.append(sr)
-            conn.commit()
-        finally:
-            conn.close()
+                conn.commit()
+            finally:
+                conn.close()
         deps.log(f"score: {len(results)} pairs scored ({len(by_topic)} batches)")
         return {"score_results": results, "counters": _bump(state["counters"], scored=len(results))}
 
@@ -308,54 +310,22 @@ def build_graph(deps: PipelineDeps):
                 "counters": _bump(state["counters"], surfaced=len(priority)),
             }
 
-        # Daily digest: hard global cap of 3 items.
-        # Phase 1: trusted-source guarantees fill first, sorted by publish recency.
-        # Phase 2: remaining slots filled by quality (top final among min_score survivors).
+        # Daily digest: pure quality routing, hard global cap of 3 items.
+        # Each (article, topic) pair must clear topic.delivery.digest_min_score;
+        # the top finals (by score) fill up to the cap. If nothing clears, the
+        # digest is empty and notify stays silent — quality over noise.
         DIGEST_CAP = 3
-        chosen: list[tuple[Article, ScoreResult]] = []
-        chosen_ids: set[str] = set()
-
-        guaranteed_pool: list[tuple[Article, ScoreResult]] = []
-        for src_cfg in deps.sources_cfg.sources:
-            if src_cfg.min_in_digest <= 0:
+        quality_candidates: list[tuple[Article, ScoreResult]] = []
+        for item in digest:
+            tid = str(item[1].topic)
+            topic_cfg = deps.topics_cfg.topics.get(tid)
+            if topic_cfg is None:
                 continue
-            src_items = sorted(
-                [(a, sr) for a, sr in digest if str(a.source) == src_cfg.id],
-                key=lambda x: x[0].published_at,
-                reverse=True,
-            )
-            # Walk the full list, counting DISTINCT article IDs. A multi-topic
-            # source can otherwise burn its quota on duplicates of the same article.
-            distinct_added = 0
-            for item in src_items:
-                if distinct_added >= src_cfg.min_in_digest:
-                    break
-                if str(item[0].id) in chosen_ids:
-                    continue
-                guaranteed_pool.append(item)
-                chosen_ids.add(str(item[0].id))
-                distinct_added += 1
-
-        # If guarantees alone exceed the cap, keep the globally-newest.
-        guaranteed_pool.sort(key=lambda x: x[0].published_at, reverse=True)
-        chosen.extend(guaranteed_pool[:DIGEST_CAP])
-        chosen_ids = {str(a.id) for a, _ in chosen}
-
-        remaining = DIGEST_CAP - len(chosen)
-        if remaining > 0:
-            quality_candidates: list[tuple[Article, ScoreResult]] = []
-            for item in digest:
-                if str(item[0].id) in chosen_ids:
-                    continue
-                tid = str(item[1].topic)
-                topic_cfg = deps.topics_cfg.topics.get(tid)
-                if topic_cfg is None:
-                    continue
-                if item[1].final < topic_cfg.delivery.digest_min_score:
-                    continue
-                quality_candidates.append(item)
-            quality_candidates.sort(key=lambda x: x[1].final, reverse=True)
-            chosen.extend(quality_candidates[:remaining])
+            if item[1].final < topic_cfg.delivery.digest_min_score:
+                continue
+            quality_candidates.append(item)
+        quality_candidates.sort(key=lambda x: x[1].final, reverse=True)
+        chosen = quality_candidates[:DIGEST_CAP]
 
         deps.log(f"route[daily]: digest={len(chosen)} priority={len(priority)}")
         return {

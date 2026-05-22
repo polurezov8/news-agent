@@ -54,7 +54,6 @@ class SourceConfig(BaseModel):
     topics: list[str]
     weight: float = 1.0
     enabled: bool = True
-    min_in_digest: int = 0          # guarantees ≥N items from this source in each digest
 
 
 class SourcesConfig(BaseModel):

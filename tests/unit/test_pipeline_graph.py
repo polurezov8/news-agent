@@ -309,7 +309,7 @@ def test_priority_cadence_suppresses_digest_and_dedups_via_surfaces(
 
 
 def test_notify_silent_when_digest_and_priority_empty(monkeypatch, tmp_path: Path, configs):
-    """Empty-state: nothing passes min_score, no trusted-source guarantees → no post."""
+    """Empty-state: nothing passes digest_min_score → no post."""
     tags_cfg, topics_cfg, sources_cfg, priors_cfg = configs
     db_path = tmp_path / "t.db"
 
@@ -334,7 +334,6 @@ def test_notify_silent_when_digest_and_priority_empty(monkeypatch, tmp_path: Pat
         ],
     )
     # Score below the topic's digest_min_score (default 0.4) → fails quality.
-    # No min_in_digest on the source → no guarantee.
     monkeypatch.setattr(
         "news_agent.llm.scorer.score_batch_for_topic",
         lambda items, topic, **k: [0.1] * len(items),
@@ -357,98 +356,6 @@ def test_notify_silent_when_digest_and_priority_empty(monkeypatch, tmp_path: Pat
     assert state["surface_refs"] == []
     assert notifier.digests == [], "must not post a digest message when empty"
     assert notifier.priorities == [], "must not DM when empty"
-
-
-def test_min_in_digest_counts_distinct_articles_not_pairs(monkeypatch, tmp_path: Path, configs):
-    """When a source maps to N topics and its newest article matches all of them,
-    min_in_digest:2 must surface 2 DISTINCT articles, not the same article on 2 topics."""
-    from datetime import timedelta
-
-    tags_cfg, topics_cfg, sources_cfg, priors_cfg = configs
-    # Map source to TWO topics; add a second topic to topics config.
-    topics_cfg.topics["topic_b"] = TopicConfig(
-        label="B",
-        emoji="🟢",
-        query=TopicQuery(must_have_any=["ai"]),
-        recency=TopicRecency(half_life_days=7),
-        delivery=TopicDelivery(priority_threshold=0.95, priority_recency_hours=24, digest_top_n=10),
-        nl_rules=[],
-    )
-    sources_cfg.sources[0] = SourceConfig(
-        id="fakesrc",
-        type="_fake_test",
-        config={},
-        topics=["topic_a", "topic_b"],
-        weight=1.0,
-        min_in_digest=2,
-    )
-
-    db_path = tmp_path / "t.db"
-    from news_agent.storage.repository import init_db
-    init_db(db_path)
-
-    now = datetime.now(timezone.utc)
-    newest = Article(
-        id=ArticleId("fakesrc:0000000000aaaaaa"),
-        source=SourceId("fakesrc"),
-        url="https://newest",
-        title="AI newest",
-        body="b",
-        content_hash=ContentHash("0000000000aaaaaa"),
-        published_at=now,
-        fetched_at=now,
-    )
-    older = Article(
-        id=ArticleId("fakesrc:0000000000bbbbbb"),
-        source=SourceId("fakesrc"),
-        url="https://older",
-        title="AI older",
-        body="b",
-        content_hash=ContentHash("0000000000bbbbbb"),
-        published_at=now - timedelta(hours=12),
-        fetched_at=now,
-    )
-
-    class _Src:
-        id = SourceId("fakesrc")
-        topics = [Tag("topic_a"), Tag("topic_b")]
-        weight = 1.0
-
-        def fetch(self):
-            return [newest, older]
-
-    monkeypatch.setattr("news_agent.pipeline.graph.make_source", lambda _: _Src())
-    monkeypatch.setattr(
-        "news_agent.llm.tagger.tag_articles",
-        lambda articles, cfg, *, model, client=None: [
-            TagResult(article=a.id, tags=frozenset([Tag("ai")]), confidence=1.0, model=model)
-            for a in articles
-        ],
-    )
-    # All substances below min_score so only the guarantee path can surface them.
-    monkeypatch.setattr(
-        "news_agent.llm.scorer.score_batch_for_topic",
-        lambda items, topic, **k: [0.2] * len(items),
-    )
-    monkeypatch.setattr("news_agent.llm.scorer._client", lambda m: object())
-
-    notifier = _RecordingNotifier()
-    from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
-
-    deps = PipelineDeps(
-        sources_cfg=sources_cfg, topics_cfg=topics_cfg,
-        tags_cfg=tags_cfg, priors_cfg=priors_cfg,
-        db_path=db_path, notifier=notifier,
-        log=lambda msg: None,
-    )
-    state = build_graph(deps).invoke(empty_state())
-
-    distinct_articles = {str(a.id) for a, _ in state["digest_items"]}
-    assert len(distinct_articles) == 2, (
-        f"min_in_digest:2 must surface 2 distinct articles; got {distinct_articles}"
-    )
-    assert "fakesrc:0000000000aaaaaa" in distinct_articles
-    assert "fakesrc:0000000000bbbbbb" in distinct_articles
 
 
 def test_daily_digest_capped_at_three(monkeypatch, tmp_path: Path, configs):
@@ -515,94 +422,6 @@ def test_daily_digest_capped_at_three(monkeypatch, tmp_path: Path, configs):
     state = build_graph(deps).invoke(empty_state())
 
     assert len(state["digest_items"]) == 3, "daily digest is hard-capped at 3 picks"
-
-
-def test_min_in_digest_picks_newest_not_highest(monkeypatch, tmp_path: Path, configs):
-    """Source guarantees sort by published_at desc — trusted curated channels
-    earn the slot by recency, not by winning a substance contest."""
-    from datetime import timedelta
-
-    tags_cfg, topics_cfg, sources_cfg, priors_cfg = configs
-    db_path = tmp_path / "t.db"
-
-    from news_agent.storage.repository import init_db
-
-    init_db(db_path)
-
-    # Override the source to require min_in_digest=1 (otherwise both fail floor + cap).
-    sources_cfg.sources[0] = SourceConfig(
-        id="fakesrc",
-        type="_fake_test",
-        config={},
-        topics=["topic_a"],
-        weight=1.0,
-        min_in_digest=1,
-    )
-
-    now = datetime.now(timezone.utc)
-    older_high = Article(
-        id=ArticleId("fakesrc:0000000000aa11aa"),
-        source=SourceId("fakesrc"),
-        url="https://x/old",
-        title="AI old but strong",
-        body="b",
-        content_hash=ContentHash("0000000000aa11aa"),
-        published_at=now - timedelta(days=2),
-        fetched_at=now,
-    )
-    newer_low = Article(
-        id=ArticleId("fakesrc:0000000000bb22bb"),
-        source=SourceId("fakesrc"),
-        url="https://x/new",
-        title="AI fresh today",
-        body="b",
-        content_hash=ContentHash("0000000000bb22bb"),
-        published_at=now,
-        fetched_at=now,
-    )
-
-    class _Src:
-        id = SourceId("fakesrc")
-        topics = [Tag("topic_a")]
-        weight = 1.0
-
-        def fetch(self):
-            return [older_high, newer_low]
-
-    monkeypatch.setattr("news_agent.pipeline.graph.make_source", lambda _: _Src())
-    monkeypatch.setattr(
-        "news_agent.llm.tagger.tag_articles",
-        lambda articles, cfg, *, model, client=None: [
-            TagResult(article=a.id, tags=frozenset([Tag("ai")]), confidence=1.0, model=model)
-            for a in articles
-        ],
-    )
-    # Both substances are below the topic's digest_min_score floor (0.4 default) so
-    # neither survives normal routing. Guarantee block fires. Old has higher final
-    # (0.4 * decay ≈ 0.33), new has lower final (0.3) — recency-sort must still
-    # pick the newer one.
-    def _by_url_substance(items, topic, **k):
-        return [0.4 if a.url.endswith("/old") else 0.3 for a, _t in items]
-
-    monkeypatch.setattr("news_agent.llm.scorer.score_batch_for_topic", _by_url_substance)
-    monkeypatch.setattr("news_agent.llm.scorer._client", lambda m: object())
-
-    notifier = _RecordingNotifier()
-    from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
-
-    deps = PipelineDeps(
-        sources_cfg=sources_cfg, topics_cfg=topics_cfg,
-        tags_cfg=tags_cfg, priors_cfg=priors_cfg,
-        db_path=db_path, notifier=notifier,
-        log=lambda msg: None,
-    )
-    state = build_graph(deps).invoke(empty_state())
-
-    # newer_low (below min_score floor) wins the guaranteed slot by recency,
-    # not older_high (above floor but stale).
-    assert len(state["digest_items"]) == 1
-    chosen_article, _sr = state["digest_items"][0]
-    assert chosen_article.url == "https://x/new", "guarantee block should pick newest, not highest-scoring"
 
 
 def test_dedup_skips_already_persisted(monkeypatch, tmp_path: Path, configs):
