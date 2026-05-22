@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
-from ..core.types import Article, ArticleId, Cadence, ScoreResult, SurfaceRef, Tag, TagResult, TopicId
+from ..core.types import Article, ArticleId, Cadence, ScoreResult, SurfaceRef, TagResult, TopicId
 from ..storage.repository import (
     connect,
     save_score,
