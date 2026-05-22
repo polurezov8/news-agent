@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 from news_agent.core.types import (
     Article,
     CorrectionEvent,
+    PipelineCounters,
     ScoreResult,
     SurfaceRef,
     TopicId,
@@ -20,6 +21,8 @@ class DigestPayload:
     topic_order: list[TopicId]
     topic_labels: dict[TopicId, tuple[str, str]] = field(default_factory=dict)
     """topic_id → (emoji, label). Optional; renderer falls back to id if missing."""
+    counters: PipelineCounters | None = None
+    """Pipeline funnel counts for the run; rendered under digest header when present."""
 
 
 @dataclass(frozen=True, slots=True)

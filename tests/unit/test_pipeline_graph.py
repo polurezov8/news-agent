@@ -183,6 +183,16 @@ def test_pipeline_end_to_end(monkeypatch, tmp_path: Path, configs):
     assert len(notifier.digests) == 1
     assert len(notifier.priorities) == 0
 
+    counters = state["counters"]
+    assert counters.fetched == 2
+    assert counters.new == 2
+    assert counters.tagged == 2
+    assert counters.on_topic == 1
+    assert counters.scored == 1
+    assert counters.surfaced == 1
+    # Notifier received counters in payload.
+    assert notifier.digests[0].counters == counters
+
 
 def test_pipeline_with_no_slack_skips_post(monkeypatch, tmp_path: Path, configs):
     tags_cfg, topics_cfg, sources_cfg, priors_cfg = configs

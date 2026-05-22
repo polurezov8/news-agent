@@ -19,6 +19,7 @@ from news_agent.core.types import (
     Article,
     ArticleId,
     Cadence,
+    PipelineCounters,
     ScoreResult,
     SourceId,
     SurfaceRef,
@@ -57,6 +58,7 @@ class PipelineState(TypedDict):
     digest_items: list[tuple[Article, ScoreResult]]
     priority_items: list[tuple[Article, ScoreResult]]
     surface_refs: list[SurfaceRef]
+    counters: PipelineCounters
 
 
 @dataclass
@@ -84,7 +86,14 @@ def empty_state() -> PipelineState:
         digest_items=[],
         priority_items=[],
         surface_refs=[],
+        counters=PipelineCounters(),
     )
+
+
+def _bump(counters: PipelineCounters, **deltas: int) -> PipelineCounters:
+    """Return a new PipelineCounters with the given fields replaced."""
+    from dataclasses import replace
+    return replace(counters, **deltas)
 
 
 def build_graph(deps: PipelineDeps):
@@ -115,7 +124,7 @@ def build_graph(deps: PipelineDeps):
 
     # ---- nodes ----
 
-    def ingest(_: PipelineState) -> dict:
+    def ingest(state: PipelineState) -> dict:
         # Budget gate runs in the entry node so even ingest can short-circuit.
         budget_cents = int(round(deps.budget_usd * 100))
         conn = connect(deps.db_path)
@@ -127,7 +136,7 @@ def build_graph(deps: PipelineDeps):
             deps.log(
                 f"BUDGET HIT: spent=${spent/100:.2f} cap=${deps.budget_usd:.2f} — aborting run"
             )
-            return {"raw_articles": []}
+            return {"raw_articles": [], "counters": _bump(state["counters"], fetched=0)}
 
         out: list[Article] = []
         for sc in deps.sources_cfg.sources:
@@ -140,7 +149,7 @@ def build_graph(deps: PipelineDeps):
                 out.extend(fetched)
             except Exception as exc:
                 deps.log(f"ingest: {sc.id} FAILED — {exc}")
-        return {"raw_articles": out}
+        return {"raw_articles": out, "counters": _bump(state["counters"], fetched=len(out))}
 
     def dedup(state: PipelineState) -> dict:
         """In-memory filter only. Articles are persisted by tag_node once tagging succeeds."""
@@ -153,11 +162,11 @@ def build_graph(deps: PipelineDeps):
         finally:
             conn.close()
         deps.log(f"dedup: {len(new)} new of {len(state['raw_articles'])} fetched")
-        return {"new_articles": new}
+        return {"new_articles": new, "counters": _bump(state["counters"], new=len(new))}
 
     def tag_node(state: PipelineState) -> dict:
         if not state["new_articles"]:
-            return {"tag_map": {}}
+            return {"tag_map": {}, "counters": _bump(state["counters"], tagged=0)}
 
         from news_agent.llm._counting_client import CountingClient
         from news_agent.llm.tagger import _client as _tagger_client_factory
@@ -185,7 +194,10 @@ def build_graph(deps: PipelineDeps):
         finally:
             conn.close()
         deps.log(f"tag: {len(results)} articles tagged + persisted")
-        return {"tag_map": {str(r.article): r.tags for r in results}}
+        return {
+            "tag_map": {str(r.article): r.tags for r in results},
+            "counters": _bump(state["counters"], tagged=len(results)),
+        }
 
     def filter_topics(state: PipelineState) -> dict:
         article_by_id = {str(a.id): a for a in state["new_articles"]}
@@ -199,11 +211,12 @@ def build_graph(deps: PipelineDeps):
                 if topic_cfg and matches_topic(tags, topic_cfg):
                     matches.append((article_id, topic_id))
         deps.log(f"filter: {len(matches)} (article, topic) pairs matched")
-        return {"matches": matches}
+        on_topic = len({aid for aid, _ in matches})
+        return {"matches": matches, "counters": _bump(state["counters"], on_topic=on_topic)}
 
     def score_node(state: PipelineState) -> dict:
         if not state["matches"]:
-            return {"score_results": []}
+            return {"score_results": [], "counters": _bump(state["counters"], scored=0)}
 
         from news_agent.llm._counting_client import CountingClient
         from news_agent.llm.scorer import _client as _scorer_client_factory
@@ -258,7 +271,7 @@ def build_graph(deps: PipelineDeps):
         finally:
             conn.close()
         deps.log(f"score: {len(results)} pairs scored ({len(by_topic)} batches)")
-        return {"score_results": results}
+        return {"score_results": results, "counters": _bump(state["counters"], scored=len(results))}
 
     def route(state: PipelineState) -> dict:
         article_by_id = {str(a.id): a for a in state["new_articles"]}
@@ -290,7 +303,11 @@ def build_graph(deps: PipelineDeps):
 
         if deps.cadence is Cadence.PRIORITY:
             deps.log(f"route[priority]: {len(priority)} new priority items (digest suppressed)")
-            return {"digest_items": [], "priority_items": priority}
+            return {
+                "digest_items": [],
+                "priority_items": priority,
+                "counters": _bump(state["counters"], surfaced=len(priority)),
+            }
 
         # daily: top-N per topic for digest, sorted by final desc, gated by min_score
         counts: dict[str, int] = {}
@@ -329,7 +346,11 @@ def build_graph(deps: PipelineDeps):
                 chosen_ids.add(str(item[0].id))
 
         deps.log(f"route[daily]: digest={len(chosen)} priority={len(priority)}")
-        return {"digest_items": chosen, "priority_items": priority}
+        return {
+            "digest_items": chosen,
+            "priority_items": priority,
+            "counters": _bump(state["counters"], surfaced=len(chosen) + len(priority)),
+        }
 
     def notify(state: PipelineState) -> dict:
         if deps.notifier is None:
@@ -350,6 +371,7 @@ def build_graph(deps: PipelineDeps):
                         items=state["digest_items"],
                         topic_order=topic_order,
                         topic_labels=topic_labels,
+                        counters=state["counters"],
                     )
                 )
                 refs.append(ref)

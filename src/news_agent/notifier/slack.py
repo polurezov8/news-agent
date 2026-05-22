@@ -11,12 +11,25 @@ from news_agent.core.types import (
     ArticleId,
     ContentHash,
     CorrectionEvent,
+    PipelineCounters,
     ScoreResult,
     SourceId,
     SurfaceRef,
     TopicId,
 )
 from news_agent.notifier.base import DigestPayload, PriorityPayload, RecapPayload
+
+
+def _counters_summary(counters: PipelineCounters) -> str:
+    """One-line funnel for the digest header context block."""
+    return (
+        f"📥 {counters.fetched} fetched · "
+        f"🆕 {counters.new} new · "
+        f"🏷️ {counters.tagged} tagged · "
+        f"🎯 {counters.on_topic} on-topic · "
+        f"📊 {counters.scored} scored · "
+        f"✨ {counters.surfaced} surfaced"
+    )
 
 
 def _safe_link_text(s: str) -> str:
@@ -78,6 +91,14 @@ def digest_blocks(payload: DigestPayload) -> list[dict]:
             },
         }
     ]
+
+    if payload.counters is not None:
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": _counters_summary(payload.counters)},
+            ],
+        })
 
     by_topic: dict[TopicId, list[tuple[Article, ScoreResult]]] = {}
     for article, score in payload.items:

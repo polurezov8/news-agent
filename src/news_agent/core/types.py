@@ -81,6 +81,16 @@ class CorrectionKind(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class PipelineCounters:
+    fetched: int = 0
+    new: int = 0
+    tagged: int = 0
+    on_topic: int = 0
+    scored: int = 0
+    surfaced: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class CorrectionEvent:
     article: ArticleId
     topic: TopicId

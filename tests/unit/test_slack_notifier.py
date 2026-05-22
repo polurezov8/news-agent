@@ -6,6 +6,7 @@ from news_agent.core.types import (
     Article,
     ArticleId,
     ContentHash,
+    PipelineCounters,
     ScoreResult,
     SourceId,
     TopicId,
@@ -107,6 +108,35 @@ class TestDigestBlocks:
         assert "Topic A" in header_sections[0]["text"]["text"]
         assert "🔵" in header_sections[0]["text"]["text"]
         assert "Topic B" in header_sections[1]["text"]["text"]
+
+    def test_counters_context_block_absent_when_none(self):
+        article = _article()
+        score = _score()
+        payload = DigestPayload(items=[(article, score)], topic_order=[TopicId("topic_a")])
+        blocks = digest_blocks(payload)
+        assert not any(b.get("type") == "context" for b in blocks)
+
+    def test_counters_context_block_present_when_set(self):
+        article = _article()
+        score = _score()
+        counters = PipelineCounters(
+            fetched=42, new=31, tagged=29, on_topic=18, scored=18, surfaced=3,
+        )
+        payload = DigestPayload(
+            items=[(article, score)],
+            topic_order=[TopicId("topic_a")],
+            counters=counters,
+        )
+        blocks = digest_blocks(payload)
+        context_blocks = [b for b in blocks if b.get("type") == "context"]
+        assert len(context_blocks) == 1
+        text = context_blocks[0]["elements"][0]["text"]
+        assert "42 fetched" in text
+        assert "31 new" in text
+        assert "29 tagged" in text
+        assert "18 on-topic" in text
+        assert "18 scored" in text
+        assert "3 surfaced" in text
 
     def test_empty_topic_skipped(self):
         article = _article()
