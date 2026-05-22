@@ -30,7 +30,6 @@ from news_agent.notifier.base import DigestPayload, PriorityPayload
 from news_agent.pipeline.scoring import (
     compute_final,
     decay_factor,
-    matches_topic,
     tag_adjustment,
     tag_to_category,
 )
@@ -206,16 +205,15 @@ def build_graph(deps: PipelineDeps):
         }
 
     def filter_topics(state: PipelineState) -> dict:
+        from .matching import match_articles_to_topics
+
         article_by_id = {str(a.id): a for a in state["new_articles"]}
-        matches: list[tuple[str, str]] = []
-        for article_id, tags in state["tag_map"].items():
-            article = article_by_id.get(article_id)
-            if article is None:
-                continue
-            for topic_id in source_topics.get(str(article.source), []):
-                topic_cfg = deps.topics_cfg.topics.get(topic_id)
-                if topic_cfg and matches_topic(tags, topic_cfg):
-                    matches.append((article_id, topic_id))
+        matches = match_articles_to_topics(
+            tag_map=state["tag_map"],
+            articles_by_id=article_by_id,
+            source_topics=source_topics,
+            topics_cfg=deps.topics_cfg,
+        )
         deps.log(f"filter: {len(matches)} (article, topic) pairs matched")
         on_topic = len({aid for aid, _ in matches})
         return {"matches": matches, "counters": _bump(state["counters"], on_topic=on_topic)}
@@ -228,20 +226,19 @@ def build_graph(deps: PipelineDeps):
         from news_agent.llm.scorer import _client as _scorer_client_factory
         from news_agent.llm.scorer import score_batch_for_topic
 
+        from .matching import group_matches_by_topic
+
         scorer_client = CountingClient(
             _scorer_client_factory(deps.scorer_model),
             model=deps.scorer_model, purpose="score", db_path=deps.db_path,
         )
         article_by_id = {str(a.id): a for a in state["new_articles"]}
 
-        # Group matches by topic so we can batch a single LLM call per topic.
-        by_topic: dict[str, list[tuple[str, Article, frozenset[Tag]]]] = {}
-        for article_id, topic_id in state["matches"]:
-            article = article_by_id.get(article_id)
-            if article is None:
-                continue
-            tags = state["tag_map"].get(article_id, frozenset())
-            by_topic.setdefault(topic_id, []).append((article_id, article, tags))
+        by_topic = group_matches_by_topic(
+            matches=state["matches"],
+            articles_by_id=article_by_id,
+            tag_map=state["tag_map"],
+        )
 
         results: list[ScoreResult] = []
         now = datetime.now(timezone.utc)
