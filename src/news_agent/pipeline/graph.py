@@ -40,10 +40,6 @@ from news_agent.storage.repository import (
     has_surface,
     load_priors_dict,
     monthly_usd_cents,
-    save_score,
-    save_surface,
-    save_tag_result,
-    upsert_article,
 )
 
 
@@ -67,15 +63,12 @@ class PipelineDeps:
     priors_cfg: PriorsConfig
     db_path: Path
     notifier: Any                                   # SlackNotifier or None
+    transactor: Any                                 # Transactor — SqliteTransactor or NullTransactor
     tagger_model: str = "claude-haiku-4-5-20251001"
     scorer_model: str = "claude-sonnet-4-6"
     cadence: Cadence = Cadence.DAILY                # DAILY | PRIORITY (WEEKLY runs outside the graph)
     budget_usd: float = 5.0                         # monthly cap; pipeline bails if exceeded
     log: Callable[[str], None] = print
-    # When True: fetch + tag + score still happen (LLM calls are real and billed),
-    # but no article/tag/score/surface rows are persisted and no Slack messages
-    # are posted. Use for prompt/topic regression tests without polluting state.
-    dry_run: bool = False
 
 
 def empty_state() -> PipelineState:
@@ -184,21 +177,8 @@ def build_graph(deps: PipelineDeps):
         )
         articles_by_id = {str(a.id): a for a in state["new_articles"]}
         now = datetime.now(timezone.utc)
-        if deps.dry_run:
-            deps.log(f"tag: {len(results)} articles tagged (dry-run, not persisted)")
-        else:
-            conn = connect(deps.db_path)
-            try:
-                for r in results:
-                    article = articles_by_id.get(str(r.article))
-                    if article is None:
-                        continue
-                    upsert_article(conn, article)
-                    save_tag_result(conn, r, now, category_lookup=cat_lookup)
-                conn.commit()
-            finally:
-                conn.close()
-            deps.log(f"tag: {len(results)} articles tagged + persisted")
+        deps.transactor.persist_tags(results, articles_by_id, cat_lookup, now)
+        deps.log(f"tag: {len(results)} articles tagged")
         return {
             "tag_map": {str(r.article): r.tags for r in results},
             "counters": _bump(state["counters"], tagged=len(results)),
@@ -252,45 +232,25 @@ def build_graph(deps: PipelineDeps):
                 model=deps.scorer_model,
                 client=scorer_client,
             )
-            # Open the connection only after the LLM call returns, so we don't
-            # hold a writer while CountingClient writes its cost row.
-            if deps.dry_run:
-                for (article_id, article, tags), substance in zip(items, substances):
-                    adj = tag_adjustment(tags, topic_cfg)
-                    d = decay_factor(article.published_at, topic_cfg.recency.half_life_days)
-                    sw = _source_weight(article.source, TopicId(topic_id))
-                    final = compute_final(substance, adj, d, sw)
-                    results.append(ScoreResult(
-                        article=ArticleId(article_id),
-                        topic=TopicId(topic_id),
-                        substance=substance,
-                        tag_adj=adj,
-                        decay=d,
-                        source_weight=sw,
-                        final=final,
-                    ))
-            else:
-                conn = connect(deps.db_path)
-                try:
-                    for (article_id, article, tags), substance in zip(items, substances):
-                        adj = tag_adjustment(tags, topic_cfg)
-                        d = decay_factor(article.published_at, topic_cfg.recency.half_life_days)
-                        sw = _source_weight(article.source, TopicId(topic_id))
-                        final = compute_final(substance, adj, d, sw)
-                        sr = ScoreResult(
-                            article=ArticleId(article_id),
-                            topic=TopicId(topic_id),
-                            substance=substance,
-                            tag_adj=adj,
-                            decay=d,
-                            source_weight=sw,
-                            final=final,
-                        )
-                        save_score(conn, sr, now)
-                        results.append(sr)
-                    conn.commit()
-                finally:
-                    conn.close()
+            batch_results: list[ScoreResult] = []
+            for (article_id, article, tags), substance in zip(items, substances):
+                adj = tag_adjustment(tags, topic_cfg)
+                d = decay_factor(article.published_at, topic_cfg.recency.half_life_days)
+                sw = _source_weight(article.source, TopicId(topic_id))
+                final = compute_final(substance, adj, d, sw)
+                batch_results.append(ScoreResult(
+                    article=ArticleId(article_id),
+                    topic=TopicId(topic_id),
+                    substance=substance,
+                    tag_adj=adj,
+                    decay=d,
+                    source_weight=sw,
+                    final=final,
+                ))
+            # Persist after the LLM call returns so we don't hold a writer
+            # while the CountingClient is writing cost rows on its own conn.
+            deps.transactor.persist_scores(batch_results, now)
+            results.extend(batch_results)
         deps.log(f"score: {len(results)} pairs scored ({len(by_topic)} batches)")
         return {"score_results": results, "counters": _bump(state["counters"], scored=len(results))}
 
@@ -357,49 +317,45 @@ def build_graph(deps: PipelineDeps):
         }
 
     def notify(state: PipelineState) -> dict:
-        if deps.dry_run or deps.notifier is None:
-            reason = "dry-run" if deps.dry_run else "no notifier"
-            deps.log(f"notify: skipped ({reason})")
+        if deps.notifier is None:
+            deps.log("notify: skipped (no notifier)")
             return {"surface_refs": []}
 
         refs: list[SurfaceRef] = []
-        conn = connect(deps.db_path)
-        try:
-            if state["digest_items"]:
-                topic_order = [TopicId(t) for t in deps.topics_cfg.topics]
-                topic_labels = {
-                    TopicId(tid): (tcfg.emoji, tcfg.label)
-                    for tid, tcfg in deps.topics_cfg.topics.items()
-                }
-                ref = deps.notifier.post_digest(
-                    DigestPayload(
-                        items=state["digest_items"],
-                        topic_order=topic_order,
-                        topic_labels=topic_labels,
-                        counters=state["counters"],
-                    )
-                )
-                refs.append(ref)
-                for article, sr in state["digest_items"]:
-                    save_surface(conn, sr.article, sr.topic, ref, Cadence.DAILY)
 
-            priority_topic_labels = {
+        if state["digest_items"]:
+            topic_order = [TopicId(t) for t in deps.topics_cfg.topics]
+            topic_labels = {
                 TopicId(tid): (tcfg.emoji, tcfg.label)
                 for tid, tcfg in deps.topics_cfg.topics.items()
             }
-            for article, sr in state["priority_items"]:
-                ref = deps.notifier.dm_priority(
-                    PriorityPayload(
-                        article=article,
-                        score=sr,
-                        topic_labels=priority_topic_labels,
-                    )
+            ref = deps.notifier.post_digest(
+                DigestPayload(
+                    items=state["digest_items"],
+                    topic_order=topic_order,
+                    topic_labels=topic_labels,
+                    counters=state["counters"],
                 )
-                refs.append(ref)
-                save_surface(conn, sr.article, sr.topic, ref, Cadence.PRIORITY)
-            conn.commit()
-        finally:
-            conn.close()
+            )
+            refs.append(ref)
+            for article, sr in state["digest_items"]:
+                deps.transactor.persist_surface(sr.article, sr.topic, ref, Cadence.DAILY)
+
+        priority_topic_labels = {
+            TopicId(tid): (tcfg.emoji, tcfg.label)
+            for tid, tcfg in deps.topics_cfg.topics.items()
+        }
+        for article, sr in state["priority_items"]:
+            ref = deps.notifier.dm_priority(
+                PriorityPayload(
+                    article=article,
+                    score=sr,
+                    topic_labels=priority_topic_labels,
+                )
+            )
+            refs.append(ref)
+            deps.transactor.persist_surface(sr.article, sr.topic, ref, Cadence.PRIORITY)
+
         deps.log(f"notify: posted {len(refs)} messages")
         return {"surface_refs": refs}
 

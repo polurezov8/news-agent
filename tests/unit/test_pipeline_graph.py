@@ -152,6 +152,7 @@ def test_pipeline_end_to_end(monkeypatch, tmp_path: Path, configs):
     notifier = _RecordingNotifier()
 
     from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
+    from news_agent.pipeline.transactor import SqliteTransactor
 
     deps = PipelineDeps(
         sources_cfg=sources_cfg,
@@ -160,6 +161,7 @@ def test_pipeline_end_to_end(monkeypatch, tmp_path: Path, configs):
         priors_cfg=priors_cfg,
         db_path=db_path,
         notifier=notifier,
+        transactor=SqliteTransactor(db_path),
         tagger_model="haiku-test",
         scorer_model="sonnet-test",
         log=lambda msg: None,
@@ -223,11 +225,13 @@ def test_pipeline_with_no_slack_skips_post(monkeypatch, tmp_path: Path, configs)
     monkeypatch.setattr("news_agent.llm.scorer._client", lambda m: object())
 
     from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
+    from news_agent.pipeline.transactor import SqliteTransactor
 
     deps = PipelineDeps(
         sources_cfg=sources_cfg, topics_cfg=topics_cfg,
         tags_cfg=tags_cfg, priors_cfg=priors_cfg,
         db_path=db_path, notifier=None,
+        transactor=SqliteTransactor(db_path),
         log=lambda msg: None,
     )
     state = build_graph(deps).invoke(empty_state())
@@ -290,11 +294,13 @@ def test_priority_cadence_suppresses_digest_and_dedups_via_surfaces(
     notifier = _RecordingNotifier()
 
     from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
+    from news_agent.pipeline.transactor import SqliteTransactor
 
     deps = PipelineDeps(
         sources_cfg=sources_cfg, topics_cfg=topics_cfg,
         tags_cfg=tags_cfg, priors_cfg=priors_cfg,
         db_path=db_path, notifier=notifier,
+        transactor=SqliteTransactor(db_path),
         cadence=Cadence.PRIORITY,
         log=lambda msg: None,
     )
@@ -342,11 +348,13 @@ def test_notify_silent_when_digest_and_priority_empty(monkeypatch, tmp_path: Pat
 
     notifier = _RecordingNotifier()
     from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
+    from news_agent.pipeline.transactor import SqliteTransactor
 
     deps = PipelineDeps(
         sources_cfg=sources_cfg, topics_cfg=topics_cfg,
         tags_cfg=tags_cfg, priors_cfg=priors_cfg,
         db_path=db_path, notifier=notifier,
+        transactor=SqliteTransactor(db_path),
         log=lambda msg: None,
     )
     state = build_graph(deps).invoke(empty_state())
@@ -412,11 +420,13 @@ def test_daily_digest_capped_at_three(monkeypatch, tmp_path: Path, configs):
 
     notifier = _RecordingNotifier()
     from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
+    from news_agent.pipeline.transactor import SqliteTransactor
 
     deps = PipelineDeps(
         sources_cfg=sources_cfg, topics_cfg=topics_cfg,
         tags_cfg=tags_cfg, priors_cfg=priors_cfg,
         db_path=db_path, notifier=notifier,
+        transactor=SqliteTransactor(db_path),
         log=lambda msg: None,
     )
     state = build_graph(deps).invoke(empty_state())
@@ -463,11 +473,13 @@ def test_dedup_skips_already_persisted(monkeypatch, tmp_path: Path, configs):
     monkeypatch.setattr("news_agent.llm.scorer._client", lambda m: object())
 
     from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
+    from news_agent.pipeline.transactor import SqliteTransactor
 
     deps = PipelineDeps(
         sources_cfg=sources_cfg, topics_cfg=topics_cfg,
         tags_cfg=tags_cfg, priors_cfg=priors_cfg,
         db_path=db_path, notifier=_RecordingNotifier(),
+        transactor=SqliteTransactor(db_path),
         log=lambda msg: None,
     )
     state = build_graph(deps).invoke(empty_state())
@@ -478,8 +490,8 @@ def test_dedup_skips_already_persisted(monkeypatch, tmp_path: Path, configs):
 
 
 def test_dry_run_does_not_persist(monkeypatch, tmp_path: Path, configs):
-    """Dry-run: pipeline computes scores but writes no articles/tags/scores/surfaces,
-    and skips notifier even when one is supplied."""
+    """Dry-run = NullTransactor + None notifier. Pipeline computes scores but
+    writes no articles/tags/scores/surfaces and posts no messages."""
     tags_cfg, topics_cfg, sources_cfg, priors_cfg = configs
     db_path = tmp_path / "t.db"
 
@@ -510,14 +522,14 @@ def test_dry_run_does_not_persist(monkeypatch, tmp_path: Path, configs):
     monkeypatch.setattr("news_agent.llm.scorer._client", lambda m: object())
 
     from news_agent.pipeline.graph import PipelineDeps, build_graph, empty_state
+    from news_agent.pipeline.transactor import NullTransactor
 
-    notifier = _RecordingNotifier()
     deps = PipelineDeps(
         sources_cfg=sources_cfg, topics_cfg=topics_cfg,
         tags_cfg=tags_cfg, priors_cfg=priors_cfg,
-        db_path=db_path, notifier=notifier,
+        db_path=db_path, notifier=None,
+        transactor=NullTransactor(),
         log=lambda msg: None,
-        dry_run=True,
     )
     state = build_graph(deps).invoke(empty_state())
 
@@ -538,6 +550,3 @@ def test_dry_run_does_not_persist(monkeypatch, tmp_path: Path, configs):
     assert scores_n == 0
     assert surfaces_n == 0
     assert state["surface_refs"] == []
-    # Notifier must be skipped even when supplied.
-    assert notifier.digests == []
-    assert notifier.priorities == []

@@ -79,6 +79,8 @@ def _deps(db_path: Path, notifier) -> PipelineDeps:
     from news_agent.config.schema import (
         PriorsConfig, SourcesConfig, TagsConfig, TopicsConfig,
     )
+    from news_agent.pipeline.transactor import SqliteTransactor
+
     return PipelineDeps(
         sources_cfg=SourcesConfig(sources=[]),
         topics_cfg=TopicsConfig(topics={}),
@@ -86,6 +88,7 @@ def _deps(db_path: Path, notifier) -> PipelineDeps:
         priors_cfg=PriorsConfig(priors=[]),
         db_path=db_path,
         notifier=notifier,
+        transactor=SqliteTransactor(db_path),
         cadence=Cadence.WEEKLY,
         log=lambda msg: None,
     )
