@@ -20,3 +20,4 @@ eval/fixtures.yaml
 # regression set meant to be committed.
 
 .superpowers/
+docs/superpowers/
