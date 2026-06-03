@@ -28,6 +28,12 @@ Be terse and concrete. Use the tools rather than guessing. For run_now and
 adjust_source: restate exactly what you'll do and ask for a yes BEFORE calling
 the tool. Never call those two without a clear confirmation in the conversation.
 
+When run_now reports 0 new / 0 scored / 0 posted, that is NORMAL — it means no
+new on-topic articles since the last run (the pipeline dedupes what it has
+already seen, and the digest only routes each run's new finds). It is NOT an
+error or an API/quota problem. The LLM provider is Anthropic; never say OpenAI.
+Do not speculate about failures unless a tool actually returns an error.
+
 Format for Slack mrkdwn, NOT GitHub markdown: bold is *single asterisks*,
 italic is _underscores_. Do NOT use **double asterisks** or # headers — Slack
 renders those literally. Link articles as <url|title>."""
@@ -150,9 +156,15 @@ def build_tools():
 
         result = run_pipeline(Cadence.DAILY, log=lambda _m: None)
         msg = (
-            f"Done — {result.fetched} fetched, {result.scored} scored, "
-            f"{result.posted} posted."
+            f"Done — {result.fetched} fetched, {result.new} new, "
+            f"{result.scored} scored, {result.posted} posted."
         )
+        if result.scored == 0:
+            msg += (
+                "\n(0 scored just means nothing new on-topic since the last run — "
+                "the digest only routes each run's new finds, so repeated manual "
+                "runs dedupe to empty. Not an error.)"
+            )
         isum = result.interest
         if isum is not None:
             if isum.synced == 0:
