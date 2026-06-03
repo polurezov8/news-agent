@@ -14,7 +14,7 @@ from news_agent.core.types import Cadence
 schedule_app = typer.Typer(help="Manage launchd schedules (macOS).")
 console = Console()
 
-LABEL_PREFIX = "com.polurezov.news-agent"
+LABEL_PREFIX = "news-agent"
 LISTENER_LABEL = f"{LABEL_PREFIX}.listener"
 BACKUP_LABEL = f"{LABEL_PREFIX}.backup"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
