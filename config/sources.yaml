@@ -56,6 +56,22 @@ sources:
     weight: 0.85
     enabled: true
 
+  - id: pragmatic_engineer
+    type: rss
+    config:
+      url: "https://newsletter.pragmaticengineer.com/feed"
+    topics: [eng_leadership]
+    weight: 0.9
+    enabled: true
+
+  - id: leaddev
+    type: rss
+    config:
+      url: "https://leaddev.com/rss.xml"
+    topics: [eng_leadership]
+    weight: 0.85
+    enabled: true
+
   - id: x_bcherny
     type: rsshub
     config:
@@ -71,6 +87,7 @@ sources:
     topics: [ai, ios, eng_leadership]
     weight: 0.95
     enabled: true
+    role: interest                    # feeds the taste profile, not the digest
 
   # Requires RSSHub running: `docker compose up -d rsshub`
   # Set RSSHUB_BASE_URL in .env if not at default http://localhost:1200

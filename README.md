@@ -1,7 +1,7 @@
 # 📰 News agent
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://docs.python.org/3/)
-[![Tests](https://img.shields.io/badge/tests-205%20passing-brightgreen.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-239%20passing-brightgreen.svg)](#tests)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-yes-success.svg)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -55,7 +55,7 @@ Verify:
 
 ```bash
 uv run news-agent --help
-uv run pytest tests/unit/ -q    # 205 passed
+uv run pytest tests/unit/ -q    # 239 passed
 ```
 
 ### Slack app setup
@@ -66,9 +66,11 @@ Create an app at [api.slack.com/apps](https://api.slack.com/apps), enable Socket
 |---|---|
 | `chat:write` | post digests and DMs |
 | `im:write` | open DM conversation |
+| `im:history` | read your DM messages (chat assistant) |
 | `reactions:read` | receive reaction feedback |
 
-Add a `/news` slash command and subscribe to the `reaction_added` event.
+Add a `/news` slash command and subscribe to the `reaction_added` and `message.im`
+events. `message.im` is what lets you talk to the agent in the DM (see [Chat](#chat)).
 
 ### Twitter/X sources
 
@@ -102,13 +104,26 @@ flowchart LR
 Scoring formula:
 
 ```
-final = (substance + tag_adj) * decay * source_weight
-        ↑           ↑           ↑       ↑
-        Sonnet      tag boosts  recency  per-(source, topic)
-        0..1        ±adj        decay    prior weight
+final = (substance + tag_adj) * decay * source_weight + taste_adj
+        ↑           ↑           ↑       ↑               ↑
+        Sonnet      tag boosts  recency  per-(source,    reading-list
+        0..1        ±adj        decay    topic) weight   interest (un-decayed)
 ```
 
+`final` ranks the picks. The digest *gate* is the un-decayed **intrinsic interest**
+(`substance + tag_adj + taste_adj`), not `final` — gating on `final` let recency
+and source-weight (both < 1) shrink everything below the floor, which kept the
+digest silent. Recency and trust now only order the picks, they don't veto them.
+
 The key design decision: tags describe what an article *is* (stable, vocab-bounded, cached across sources), while topics describe what *you care about* (personal queries over tags, freely editable). Changing a topic never re-runs the tagger.
+
+**Taste from your reading list.** Safari reading list is an *interest signal*, not a
+news source: it never competes for digest slots. What you save — and especially what
+you *read* (`DateLastViewed`) — updates a per-tag taste profile (domain + quality tags
+only, so reading listicles doesn't surface more listicles). That profile is the
+`taste_adj` term, so the agent finds more of what you read from your other sources. A
+save→read happens after the item is already stored, so the read sync runs outside the
+hash-dedup that would otherwise drop it.
 
 ---
 
@@ -226,8 +241,19 @@ DOU · Engineering Leadership · 4h ago
 |---|---|---|
 | Daily digest | 10:00 local | Hard cap **3 picks total**: editor's pick + up to two also-today. Trusted-source guarantees fill first by recency; remaining slots by `final` score. Silent on empty days. |
 | Priority DM | Real-time | One-item card under 🔔 PRIORITY when `final ≥ topic.priority_threshold` within the freshness window. |
-| Weekly recap | Sunday 10:00 | ⭐️ TOP THIS WEEK + 💭 HIGH-SCORE BUT SKIPPED + footer: `runs · surfaced · boosted · demoted · top sources`. |
-| On-demand | `/news` | Run pipeline immediately. |
+| Weekly recap | Sunday 10:00 | ⭐️ TOP THIS WEEK + 💭 HIGH-SCORE BUT SKIPPED + 📌 FROM YOUR READING LIST (taste tags + topic suggestions) + footer: `runs · surfaced · boosted · demoted · top sources`. |
+| On-demand | `/news` | Run the pipeline immediately. |
+
+### Chat
+
+DM the agent in plain language (requires the `im:history` scope and `message.im`
+subscription above). A Sonnet tool-loop answers over your corpus:
+
+- **find** — "anything on Swift macros this month?"
+- **ask** — "what did you surface on TCA this week?", "what have you learned about me?"
+- **status** — "how much have we spent?"
+- **act** — "run now" (runs the pipeline), "boost pointfree", "demote DOU for AI"
+  (nudges source trust). Side-effecting actions are confirmed in the chat first.
 
 ---
 
@@ -251,7 +277,7 @@ news-agent init             interactive setup wizard
 ## Tests
 
 ```bash
-uv run pytest tests/unit/ -q    # 205 tests
+uv run pytest tests/unit/ -q    # 239 tests
 uv run ruff check src tests
 ```
 

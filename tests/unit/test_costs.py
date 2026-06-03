@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from news_agent.llm.costs import PRICING, cents_to_dollars, usd_cents
+from news_agent.llm.costs import PRICING, cents_to_dollars, cost_microcents, usd_cents
 from news_agent.storage.repository import (
     connect,
     init_db,
@@ -35,6 +35,17 @@ class TestUsdCents:
         assert usd_cents("unknown-model", 1_000_000, 0) > 0
 
 
+class TestCostMicrocents:
+    def test_keeps_subcent_precision(self):
+        # 100 in + 50 out Haiku = 28_000 microcents — usd_cents floors this to 0.
+        assert cost_microcents("claude-haiku-4-5-20251001", 100, 50) == 28_000
+        assert usd_cents("claude-haiku-4-5-20251001", 100, 50) == 0
+
+    def test_one_cent_at_1e6(self):
+        # 1M microcents == 1 cent. Haiku 12_500 input = 1_000_000 microcents.
+        assert cost_microcents("claude-haiku-4-5-20251001", 12_500, 0) == 1_000_000
+
+
 class TestCentsToDollars:
     def test_zero(self):
         assert cents_to_dollars(0) == "$0.00"
@@ -57,6 +68,8 @@ class TestMonthlySpend:
             conn.close()
 
     def test_sums_within_month(self, tmp_path: Path):
+        # Recomputed from tokens, not the (always-0) stored usd_cents column.
+        # haiku 1M in = 80¢; sonnet 1M in + 1M out = 1800¢ → 1880¢.
         db = tmp_path / "t.db"
         init_db(db)
         now = datetime.now(timezone.utc)
@@ -64,16 +77,36 @@ class TestMonthlySpend:
         try:
             save_llm_cost(
                 conn, model="claude-haiku-4-5-20251001",
-                input_tokens=1000, output_tokens=500,
-                usd_cents=12, purpose="tag", article_id=None, at=now,
+                input_tokens=1_000_000, output_tokens=0,
+                usd_cents=0, purpose="tag", article_id=None, at=now,
             )
             save_llm_cost(
                 conn, model="claude-sonnet-4-6",
-                input_tokens=500, output_tokens=100,
-                usd_cents=30, purpose="score", article_id=None, at=now,
+                input_tokens=1_000_000, output_tokens=1_000_000,
+                usd_cents=0, purpose="score", article_id=None, at=now,
             )
             conn.commit()
-            assert monthly_usd_cents(conn, now=now) == 42
+            assert monthly_usd_cents(conn, now=now) == 1880
+        finally:
+            conn.close()
+
+    def test_subcent_calls_accumulate(self, tmp_path: Path):
+        # The original bug: each call floored to 0¢, so a month summed to $0 and
+        # the budget gate never tripped. 100 sub-cent haiku calls must now total.
+        db = tmp_path / "t.db"
+        init_db(db)
+        now = datetime.now(timezone.utc)
+        conn = connect(db)
+        try:
+            for _ in range(100):
+                save_llm_cost(
+                    conn, model="claude-haiku-4-5-20251001",
+                    input_tokens=1000, output_tokens=0,
+                    usd_cents=0, purpose="tag", article_id=None, at=now,
+                )
+            conn.commit()
+            # 100 * (1000 * 80) = 8_000_000 microcents = 8¢.
+            assert monthly_usd_cents(conn, now=now) == 8
         finally:
             conn.close()
 
@@ -86,16 +119,16 @@ class TestMonthlySpend:
         try:
             save_llm_cost(
                 conn, model="claude-haiku-4-5-20251001",
-                input_tokens=0, output_tokens=0, usd_cents=999,
+                input_tokens=9_000_000, output_tokens=0, usd_cents=0,
                 purpose="tag", article_id=None, at=last_month,
             )
             save_llm_cost(
                 conn, model="claude-haiku-4-5-20251001",
-                input_tokens=0, output_tokens=0, usd_cents=10,
+                input_tokens=1_000_000, output_tokens=0, usd_cents=0,
                 purpose="tag", article_id=None, at=now,
             )
             conn.commit()
-            assert monthly_usd_cents(conn, now=now) == 10
+            assert monthly_usd_cents(conn, now=now) == 80
         finally:
             conn.close()
 

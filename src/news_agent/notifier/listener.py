@@ -109,9 +109,27 @@ def make_app(
             notifier.post_digest(_demo_payload())
             respond("Demo digest posted to channel ✓")
         elif text == "status":
-            respond("_Status: M3 pipeline not yet running. Try `/news demo` to preview formatting._")
+            from news_agent.application import load_default_context
+            from news_agent.llm.costs import cents_to_dollars
+            from news_agent.storage.repository import connect, monthly_usd_cents
+
+            ctx = load_default_context()
+            conn = connect(ctx.db_path)
+            try:
+                spent = monthly_usd_cents(conn, now=datetime.now(timezone.utc))
+            finally:
+                conn.close()
+            respond(f"MTD spend: {cents_to_dollars(spent)} of {cents_to_dollars(int(ctx.budget_usd * 100))}")
         else:
-            respond("Usage: `/news` · `/news status` · `/news demo`\n_on-demand digest lands in M3._")
+            respond("Running the pipeline now…")
+            try:
+                from news_agent.application import run_pipeline
+                from news_agent.core.types import Cadence
+
+                result = run_pipeline(Cadence.DAILY, log=lambda _m: None)
+                respond(f"Done — {result.fetched} fetched, {result.scored} scored, {result.posted} posted.")
+            except Exception as exc:
+                respond(f"Run failed: {exc}")
 
     @app.action(re.compile(r"^(boost|save|skip|demote)$"))
     def handle_button(ack, body, action, logger):
@@ -175,6 +193,37 @@ def make_app(
             return
         for ev in evs:
             on_correction(ev)
+
+    # Per-DM conversation history (in-memory; reset on listener restart).
+    history: dict[str, list] = {}
+
+    @app.event("message")
+    def handle_message(event, say, logger):
+        # Only real user DMs — skip bot posts, edits, our own digests.
+        if event.get("channel_type") != "im":
+            return
+        if event.get("bot_id") or event.get("subtype"):
+            return
+        text = (event.get("text") or "").strip()
+        if not text:
+            return
+
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from news_agent.notifier.assistant import answer
+
+        channel = event.get("channel", "")
+        turns = history.setdefault(channel, [])
+        turns.append(HumanMessage(content=text))
+        try:
+            reply = answer(turns)
+        except Exception as exc:
+            logger.warning("assistant error: %s", exc)
+            say("Something went wrong handling that.")
+            return
+        turns.append(AIMessage(content=reply))
+        del turns[:-12]  # keep the last few exchanges
+        say(reply)
 
     return app
 

@@ -13,6 +13,7 @@ from datetime import datetime
 
 from ..config.schema import TopicsConfig
 from ..core.types import Article, Cadence, ScoreResult
+from .scoring import intrinsic_interest
 
 
 DIGEST_CAP = 3
@@ -42,8 +43,10 @@ def route_to_surface(
         prior_priority_surfaces (relevant for hourly priority runs).
       - PRIORITY cadence: digest is empty by design (digest cadence handles it).
       - DAILY cadence:
-          * Apply topic.delivery.digest_min_score as quality floor.
-          * Sort surviving by final desc.
+          * Apply topic.delivery.digest_min_score as a floor on *intrinsic
+            interest* (substance + tag_adj + taste_adj), NOT on final — final is
+            shrunk by decay & source_weight and gating on it keeps the digest dark.
+          * Sort surviving by final desc (recency/source trust order the picks).
           * Keep up to DIGEST_CAP globally.
       - Pairs with unknown article or topic_cfg are silently dropped — the
         caller is responsible for ensuring referential integrity.
@@ -76,7 +79,8 @@ def route_to_surface(
         topic_cfg = topics_cfg.topics.get(str(item[1].topic))
         if topic_cfg is None:
             continue
-        if item[1].final < topic_cfg.delivery.digest_min_score:
+        sr = item[1]
+        if intrinsic_interest(sr.substance, sr.tag_adj, sr.taste_adj) < topic_cfg.delivery.digest_min_score:
             continue
         quality_candidates.append(item)
     quality_candidates.sort(key=lambda x: x[1].final, reverse=True)

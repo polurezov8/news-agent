@@ -27,6 +27,7 @@ from news_agent.core.types import (
     TopicId,
 )
 from news_agent.notifier.base import DigestPayload, PriorityPayload
+from news_agent.learning.taste import taste_adjustment
 from news_agent.pipeline.scoring import (
     compute_final,
     decay_factor,
@@ -39,6 +40,7 @@ from news_agent.storage.repository import (
     connect,
     has_surface,
     load_priors_dict,
+    load_taste,
     monthly_usd_cents,
 )
 
@@ -137,6 +139,8 @@ def build_graph(deps: PipelineDeps):
         for sc in deps.sources_cfg.sources:
             if not sc.enabled:
                 continue
+            if getattr(sc, "role", "discovery") == "interest":
+                continue  # interest sources feed taste (sync_interest), not the digest
             try:
                 src = make_source(sc)
                 fetched = src.fetch()
@@ -214,6 +218,12 @@ def build_graph(deps: PipelineDeps):
         )
         article_by_id = {str(a.id): a for a in state["new_articles"]}
 
+        _tconn = connect(deps.db_path)
+        try:
+            taste_weights = load_taste(_tconn)
+        finally:
+            _tconn.close()
+
         by_topic = group_matches_by_topic(
             matches=state["matches"],
             articles_by_id=article_by_id,
@@ -237,7 +247,8 @@ def build_graph(deps: PipelineDeps):
                 adj = tag_adjustment(tags, topic_cfg)
                 d = decay_factor(article.published_at, topic_cfg.recency.half_life_days)
                 sw = _source_weight(article.source, TopicId(topic_id))
-                final = compute_final(substance, adj, d, sw)
+                t_adj = taste_adjustment(tags, taste_weights)
+                final = compute_final(substance, adj, d, sw, t_adj)
                 batch_results.append(ScoreResult(
                     article=ArticleId(article_id),
                     topic=TopicId(topic_id),
@@ -246,6 +257,7 @@ def build_graph(deps: PipelineDeps):
                     decay=d,
                     source_weight=sw,
                     final=final,
+                    taste_adj=t_adj,
                 ))
             # Persist after the LLM call returns so we don't hold a writer
             # while the CountingClient is writing cost rows on its own conn.

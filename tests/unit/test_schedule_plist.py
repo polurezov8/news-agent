@@ -9,7 +9,7 @@ from news_agent.core.types import Cadence
 def _plist(cadence: Cadence) -> str:
     return generate_plist(
         cadence,
-        bin_path="/path/to/news-agent",
+        uv_path="/opt/homebrew/bin/uv",
         working_dir="/proj",
         log_dir="/logs",
     )
@@ -45,7 +45,11 @@ def test_label_includes_cadence():
 
 def test_program_arguments_use_cadence_flag():
     p = _plist(Cadence.PRIORITY)
-    assert "<string>/path/to/news-agent</string>" in p
+    # launchd execs `uv run news-agent run --cadence …` — never the Desktop
+    # .venv binary directly (macOS TCC blocks that).
+    assert "<string>/opt/homebrew/bin/uv</string>" in p
+    assert "<string>run</string>" in p
+    assert "<string>news-agent</string>" in p
     assert "<string>--cadence</string>" in p
     assert "<string>priority</string>" in p
 
@@ -58,7 +62,7 @@ def test_logs_path_per_cadence():
 
 def test_on_demand_is_unschedulable():
     with pytest.raises(ValueError):
-        generate_plist(Cadence.ON_DEMAND, bin_path="x", working_dir="x", log_dir="x")
+        generate_plist(Cadence.ON_DEMAND, uv_path="x", working_dir="x", log_dir="x")
 
 
 def test_listener_plist_runs_continuously_with_keepalive():
@@ -66,7 +70,7 @@ def test_listener_plist_runs_continuously_with_keepalive():
     from news_agent.cli.schedule import LISTENER_LABEL, generate_listener_plist
 
     p = generate_listener_plist(
-        bin_path="/path/to/news-agent",
+        uv_path="/opt/homebrew/bin/uv",
         working_dir="/proj",
         log_dir="/logs",
     )
@@ -74,7 +78,8 @@ def test_listener_plist_runs_continuously_with_keepalive():
     assert "<key>RunAtLoad</key>" in p
     assert "<true/>" in p
     assert "<key>KeepAlive</key>" in p
-    # listener invokes `news-agent slack` (Socket Mode listener)
+    # listener invokes `uv run news-agent slack` (Socket Mode listener), TCC-safe
+    assert "<string>/opt/homebrew/bin/uv</string>" in p
     assert "<string>slack</string>" in p
     # not a cron — no calendar or interval schedule
     assert "<key>StartCalendarInterval</key>" not in p

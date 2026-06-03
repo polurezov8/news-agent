@@ -40,9 +40,30 @@ def decay_factor(published_at: datetime, half_life_days: int) -> float:
     return math.exp(-math.log(2) * age_days / half_life_days)
 
 
-def compute_final(substance: float, tag_adj: float, decay: float, source_weight: float) -> float:
-    """final = (substance + tag_adj) * decay * source_weight, clamped to [0, 1]."""
-    return max(0.0, min(1.0, (substance + tag_adj) * decay * source_weight))
+def compute_final(
+    substance: float,
+    tag_adj: float,
+    decay: float,
+    source_weight: float,
+    taste_adj: float = 0.0,
+) -> float:
+    """final = (substance + tag_adj) * decay * source_weight + taste_adj, clamped to [0, 1].
+
+    taste_adj is added *outside* the decay/source_weight multiply on purpose:
+    interest in a topic isn't time-sensitive and shouldn't be shrunk the way
+    recency and source trust legitimately shrink the substance term.
+    """
+    return max(0.0, min(1.0, (substance + tag_adj) * decay * source_weight + taste_adj))
+
+
+def intrinsic_interest(substance: float, tag_adj: float, taste_adj: float = 0.0) -> float:
+    """Time-independent relevance: substance + topic shaping + reading taste.
+
+    This is the digest's quality gate. Recency (decay) and source trust
+    (source_weight) only shrink `final` for *ranking* — gating on the shrunken
+    number is what kept the digest silent, since both factors are < 1.
+    """
+    return substance + tag_adj + taste_adj
 
 
 def tag_to_category(cfg: TagsConfig) -> dict[str, str]:

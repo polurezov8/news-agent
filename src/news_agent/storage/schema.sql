@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS articles (
     content_hash    TEXT NOT NULL,
     published_at    TEXT NOT NULL,
     fetched_at      TEXT NOT NULL,
+    read_at         TEXT,                     -- Safari DateLastViewed; NULL = unread
     raw_json        TEXT
 );
 
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS scores (
     tag_adj         REAL NOT NULL,
     decay           REAL NOT NULL,
     source_weight   REAL NOT NULL,
+    taste_adj       REAL NOT NULL DEFAULT 0,  -- interest boost from reading-list taste
     final_score     REAL NOT NULL,
     scored_at       TEXT NOT NULL,
     PRIMARY KEY (article_id, topic_id)
@@ -89,6 +91,16 @@ CREATE TABLE IF NOT EXISTS tag_suggestions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tag_suggestions_status ON tag_suggestions(status);
+
+-- Per-tag interest weight learned from what the user saves AND reads in Safari.
+-- Read items push a tag's weight toward 1.0; saved-but-unread push gently. The
+-- digest gate adds this as a time-independent interest boost so "more like what
+-- I read" surfaces from other sources.
+CREATE TABLE IF NOT EXISTS taste (
+    tag             TEXT PRIMARY KEY,
+    weight          REAL NOT NULL,
+    updated_at      TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS source_stats (
     source_id       TEXT PRIMARY KEY,

@@ -9,7 +9,7 @@ from news_agent.config.schema import TopicConfig
 from news_agent.core.types import Article, Tag
 
 BATCH_SIZE = 12
-_BODY_TRUNC = 600
+_BODY_TRUNC = 2000   # long-form (esp. eng-leadership essays) can't be judged on an intro
 
 _SINGLE_PROMPT = """Rate the substance and relevance of this article for the topic "{label}".
 

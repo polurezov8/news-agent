@@ -21,6 +21,18 @@ DEFAULT_BOOKMARKS_PATH = Path("~/Library/Safari/Bookmarks.plist").expanduser()
 READING_LIST_TITLE = "com.apple.ReadingList"
 
 
+def extract_read_at(item: dict) -> datetime | None:
+    """Safari's read timestamp for a reading-list item, or None if unread.
+
+    `DateLastViewed` is set the moment you open a saved item — it's the strong
+    "I actually cared" signal the taste profile learns from.
+    """
+    dlv = (item.get("ReadingList", {}) or {}).get("DateLastViewed")
+    if not isinstance(dlv, datetime):
+        return None
+    return dlv if dlv.tzinfo else dlv.replace(tzinfo=timezone.utc)
+
+
 def _find_reading_list_node(node: dict) -> dict | None:
     """Recursive search for the Reading List folder."""
     if node.get("Title") == READING_LIST_TITLE:

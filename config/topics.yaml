@@ -20,7 +20,7 @@ topics:
       - "Reward first-person retrospectives from practitioners."
     delivery:
       digest_top_n: 2
-      digest_min_score: 0.6
+      digest_min_score: 0.5
       priority_threshold: 0.9
       priority_recency_hours: 24
 
@@ -43,7 +43,7 @@ topics:
       - "Apple platform announcements (WWDC, betas) are inherently relevant."
     delivery:
       digest_top_n: 2
-      digest_min_score: 0.6
+      digest_min_score: 0.5
       priority_threshold: 0.92
       priority_recency_hours: 48
 
@@ -66,6 +66,6 @@ topics:
       - "Penalize repackaged listicles and motivational content."
     delivery:
       digest_top_n: 2
-      digest_min_score: 0.6
+      digest_min_score: 0.5
       priority_threshold: 0.95
       priority_recency_hours: 72

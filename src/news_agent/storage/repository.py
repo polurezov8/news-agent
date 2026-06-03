@@ -17,6 +17,7 @@ from news_agent.core.types import (
     ScoreResult,
     SourceId,
     SurfaceRef,
+    Tag,
     TagResult,
     TopicId,
 )
@@ -37,9 +38,25 @@ def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA_PATH.read_text())
+        _migrate(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns that CREATE TABLE IF NOT EXISTS can't retrofit onto an
+    existing DB. Idempotent — guarded on PRAGMA table_info."""
+    _add_column_if_missing(conn, "articles", "read_at", "TEXT")
+    _add_column_if_missing(conn, "scores", "taste_adj", "REAL NOT NULL DEFAULT 0")
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, decl: str
+) -> None:
+    existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 def article_exists_by_hash(conn: sqlite3.Connection, content_hash: ContentHash) -> bool:
@@ -71,6 +88,44 @@ def upsert_article(conn: sqlite3.Connection, article: Article) -> None:
     )
 
 
+def set_article_read_at(
+    conn: sqlite3.Connection,
+    article_id: ArticleId,
+    read_at: datetime,
+) -> None:
+    """Stamp an article as read. Used by the Safari sync, which runs outside the
+    hash-dedup path so a save→read transition is never dropped before it counts."""
+    conn.execute(
+        "UPDATE articles SET read_at = ? WHERE id = ?",
+        (read_at.isoformat(), str(article_id)),
+    )
+
+
+def load_taste(conn: sqlite3.Connection) -> dict[str, float]:
+    """The per-tag interest profile as {tag: weight}."""
+    rows = conn.execute("SELECT tag, weight FROM taste").fetchall()
+    return {r["tag"]: r["weight"] for r in rows}
+
+
+def save_taste(
+    conn: sqlite3.Connection,
+    weights: dict[str, float],
+    updated_at: datetime,
+) -> None:
+    """Overwrite the taste profile with `weights`."""
+    for tag, weight in weights.items():
+        conn.execute(
+            """
+            INSERT INTO taste (tag, weight, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(tag) DO UPDATE SET
+                weight = excluded.weight,
+                updated_at = excluded.updated_at
+            """,
+            (tag, weight, updated_at.isoformat()),
+        )
+
+
 def save_tag_result(
     conn: sqlite3.Connection,
     result: TagResult,
@@ -96,12 +151,34 @@ def save_tag_result(
         )
 
 
+def load_article_tags(conn: sqlite3.Connection, article_id: ArticleId) -> frozenset[Tag]:
+    """Tags already persisted for an article. Empty if untagged."""
+    rows = conn.execute(
+        "SELECT tag FROM tags WHERE article_id = ?", (str(article_id),)
+    ).fetchall()
+    return frozenset(Tag(r["tag"]) for r in rows)
+
+
+def get_article_read_state(
+    conn: sqlite3.Connection, article_id: ArticleId
+) -> tuple[bool, str | None]:
+    """(exists, read_at) for an article — lets the Safari sync detect a
+    save→read transition without re-tagging or re-counting taste."""
+    row = conn.execute(
+        "SELECT read_at FROM articles WHERE id = ?", (str(article_id),)
+    ).fetchone()
+    if row is None:
+        return (False, None)
+    return (True, row["read_at"])
+
+
 def save_score(conn: sqlite3.Connection, result: ScoreResult, scored_at: datetime) -> None:
     conn.execute(
         """
         INSERT OR REPLACE INTO scores
-            (article_id, topic_id, substance, tag_adj, decay, source_weight, final_score, scored_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (article_id, topic_id, substance, tag_adj, decay, source_weight,
+             taste_adj, final_score, scored_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             str(result.article),
@@ -110,6 +187,7 @@ def save_score(conn: sqlite3.Connection, result: ScoreResult, scored_at: datetim
             result.tag_adj,
             result.decay,
             result.source_weight,
+            result.taste_adj,
             result.final,
             scored_at.isoformat(),
         ),
@@ -186,6 +264,7 @@ def _row_to_score(row: sqlite3.Row, article_id: ArticleId) -> ScoreResult:
         tag_adj=row["tag_adj"],
         decay=row["decay"],
         source_weight=row["source_weight"],
+        taste_adj=row["taste_adj"],
         final=row["final_score"],
     )
 
@@ -201,7 +280,8 @@ def query_top_scored(
         """
         SELECT a.id, a.source_id, a.url, a.title, a.body, a.content_hash,
                a.published_at, a.fetched_at,
-               s.topic_id, s.substance, s.tag_adj, s.decay, s.source_weight, s.final_score
+               s.topic_id, s.substance, s.tag_adj, s.decay, s.source_weight,
+               s.taste_adj, s.final_score
         FROM scores s
         JOIN articles a ON s.article_id = a.id
         WHERE a.fetched_at >= ?
@@ -211,6 +291,46 @@ def query_top_scored(
         (since.isoformat(), limit),
     ).fetchall()
     return [(_row_to_article(r), _row_to_score(r, ArticleId(r["id"]))) for r in rows]
+
+
+def search_articles(
+    conn: sqlite3.Connection,
+    *,
+    query: str,
+    topic: str | None = None,
+    since: datetime | None = None,
+    limit: int = 10,
+) -> list[tuple[Article, float | None]]:
+    """Free-text search over the corpus for the Slack assistant.
+
+    Matches title/body LIKE %query%, optionally filtered by topic and recency,
+    ranked by best final_score then recency. Returns (article, best_final) pairs;
+    best_final is None for articles that were never scored (e.g. filtered out)."""
+    like = f"%{query}%"
+    clauses = ["(a.title LIKE ? OR a.body LIKE ?)"]
+    params: list = [like, like]
+    if topic:
+        clauses.append("s.topic_id = ?")
+        params.append(topic)
+    if since is not None:
+        clauses.append("a.fetched_at >= ?")
+        params.append(since.isoformat())
+    where = " AND ".join(clauses)
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT a.id, a.source_id, a.url, a.title, a.body, a.content_hash,
+               a.published_at, a.fetched_at, MAX(s.final_score) AS best_final
+        FROM articles a
+        LEFT JOIN scores s ON s.article_id = a.id
+        WHERE {where}
+        GROUP BY a.id
+        ORDER BY best_final DESC NULLS LAST, a.fetched_at DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [(_row_to_article(r), r["best_final"]) for r in rows]
 
 
 def save_correction(conn: sqlite3.Connection, event: CorrectionEvent) -> None:
@@ -318,13 +438,37 @@ def save_llm_cost(
 
 
 def monthly_usd_cents(conn: sqlite3.Connection, *, now: datetime) -> int:
-    """Sum llm_cost.usd_cents for the current calendar month (UTC)."""
+    """Cents spent on LLM calls this calendar month (UTC), rounded to the cent.
+
+    Recomputed from the intact token columns via cost_microcents — the stored
+    usd_cents column floored every sub-cent call to 0, so summing it gave $0 and
+    the budget gate never tripped. Summing precision and dividing once fixes both
+    this and the status display retroactively, with no backfill."""
+    from news_agent.llm.costs import cost_microcents
+
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    row = conn.execute(
-        "SELECT COALESCE(SUM(usd_cents), 0) AS c FROM llm_cost WHERE at >= ?",
+    rows = conn.execute(
+        "SELECT model, input_tokens, output_tokens FROM llm_cost WHERE at >= ?",
         (month_start.isoformat(),),
-    ).fetchone()
-    return int(row["c"])
+    ).fetchall()
+    total_microcents = sum(
+        cost_microcents(r["model"], r["input_tokens"], r["output_tokens"]) for r in rows
+    )
+    return round(total_microcents / 1_000_000)
+
+
+def save_audit(
+    conn: sqlite3.Connection,
+    *,
+    event: str,
+    article_id: str | None,
+    payload_json: str,
+    at: datetime,
+) -> None:
+    conn.execute(
+        "INSERT INTO audit_log (event, article_id, payload_json, at) VALUES (?, ?, ?, ?)",
+        (event, article_id, payload_json, at.isoformat()),
+    )
 
 
 def load_priors_dict(conn: sqlite3.Connection) -> dict[tuple[str, str], float]:
@@ -346,7 +490,8 @@ def query_skipped_high(
         """
         SELECT a.id, a.source_id, a.url, a.title, a.body, a.content_hash,
                a.published_at, a.fetched_at,
-               s.topic_id, s.substance, s.tag_adj, s.decay, s.source_weight, s.final_score
+               s.topic_id, s.substance, s.tag_adj, s.decay, s.source_weight,
+               s.taste_adj, s.final_score
         FROM scores s
         JOIN articles a ON s.article_id = a.id
         LEFT JOIN surfaces sur

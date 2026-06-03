@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -54,6 +54,9 @@ class SourceConfig(BaseModel):
     topics: list[str]
     weight: float = 1.0
     enabled: bool = True
+    role: Literal["discovery", "interest"] = "discovery"
+    """discovery sources feed the digest funnel; interest sources (e.g. Safari
+    reading list) feed the taste profile instead and never compete for picks."""
 
 
 class SourcesConfig(BaseModel):

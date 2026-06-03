@@ -52,7 +52,8 @@ class ScoreResult:
     tag_adj: float            # ± from boost / penalize
     decay: float              # 0..1 from per-topic half-life
     source_weight: float      # 0..1 from source_priors
-    final: float              # (substance + tag_adj) * decay * source_weight
+    final: float              # (substance + tag_adj) * decay * source_weight + taste_adj
+    taste_adj: float = 0.0    # interest boost from reading-list taste (un-decayed)
 
 
 class Cadence(str, Enum):

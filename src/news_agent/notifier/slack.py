@@ -160,6 +160,7 @@ def priority_blocks(payload: PriorityPayload) -> list[dict]:
 
 _TOP_WEEK_LABEL = "*⭐️  TOP THIS WEEK*"
 _SKIPPED_LABEL = "*💭  HIGH-SCORE BUT SKIPPED*"
+_READING_LABEL = "*📌  FROM YOUR READING LIST*"
 
 
 def _weekly_stats_footer(stats: "WeeklyStats") -> str:
@@ -198,6 +199,14 @@ def recap_blocks(payload: RecapPayload) -> list[dict]:
         blocks.append(_label_context(_SKIPPED_LABEL))
         for article, score in payload.skipped_but_high:
             blocks.append(_item_section(article, score, payload.topic_labels, now=now))
+
+    if payload.taste_top:
+        blocks.append(_label_context(_READING_LABEL))
+        tags_line = "  ·  ".join(t for t, _ in payload.taste_top)
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": tags_line}})
+        if payload.uncovered_tags:
+            nudge = ", ".join(f"`{t}`" for t in payload.uncovered_tags)
+            blocks.append(_label_context(f"You keep reading {nudge} — no topic covers it yet."))
 
     if payload.stats is not None:
         blocks.append(_label_context(_weekly_stats_footer(payload.stats)))

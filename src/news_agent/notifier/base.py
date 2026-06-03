@@ -50,6 +50,10 @@ class RecapPayload:
     window_days: int
     topic_labels: dict[TopicId, tuple[str, str]] = field(default_factory=dict)
     stats: WeeklyStats | None = None
+    taste_top: list[tuple[str, float]] = field(default_factory=list)
+    """Strongest reading-list interest tags — rendered as 'from your reading list'."""
+    uncovered_tags: list[str] = field(default_factory=list)
+    """High-interest tags no topic captures — surfaced as topic suggestions."""
 
 
 @runtime_checkable

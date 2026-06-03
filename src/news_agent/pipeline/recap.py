@@ -6,13 +6,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from news_agent.core.types import Cadence, CorrectionKind, SurfaceRef, TopicId
+from news_agent.learning.taste import top_taste, uncovered_interest_tags
 from news_agent.notifier.base import RecapPayload, WeeklyStats
 from news_agent.pipeline.graph import PipelineDeps
+from news_agent.pipeline.scoring import tag_to_category
 from news_agent.storage.repository import (
     connect,
     count_corrections_by_kind,
     count_distinct_run_days,
     count_surfaces_in_window,
+    load_taste,
     query_skipped_high,
     query_top_scored,
     save_surface,
@@ -44,12 +47,19 @@ def run_weekly_recap(deps: PipelineDeps, *, window_days: int = 7) -> int:
                 conn, since=since, cadence=Cadence.DAILY, limit=3,
             ),
         )
+        taste = load_taste(conn)
     finally:
         conn.close()
 
+    taste_top = top_taste(taste, n=8)
+    covered = {
+        t for tcfg in deps.topics_cfg.topics.values() for t in tcfg.query.must_have_any
+    }
+    uncovered = uncovered_interest_tags(taste, covered, tag_to_category(deps.tags_cfg))
+
     deps.log(f"recap: top={len(top)} skipped={len(skipped)} window={window_days}d")
 
-    if not top and not skipped:
+    if not top and not skipped and not taste_top:
         deps.log("recap: nothing to post")
         return 0
 
@@ -63,6 +73,8 @@ def run_weekly_recap(deps: PipelineDeps, *, window_days: int = 7) -> int:
         window_days=window_days,
         topic_labels=topic_labels,
         stats=stats,
+        taste_top=taste_top,
+        uncovered_tags=uncovered,
     )
     ref: SurfaceRef = deps.notifier.post_recap(payload)
 

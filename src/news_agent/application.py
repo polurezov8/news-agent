@@ -20,7 +20,15 @@ from typing import Callable
 
 from .config.loader import load_priors, load_sources, load_tags, load_topics
 from .config.schema import PriorsConfig, SourcesConfig, TagsConfig, TopicsConfig
-from .core.types import Article, Cadence, CorrectionEvent, ScoreResult
+from .core.types import (
+    Article,
+    Cadence,
+    CorrectionEvent,
+    CorrectionKind,
+    ScoreResult,
+    SourceId,
+    TopicId,
+)
 from .learning.priors import updated_prior
 from .pipeline.graph import PipelineDeps, build_graph, empty_state
 from .pipeline.transactor import NullTransactor, SqliteTransactor, Transactor
@@ -28,6 +36,7 @@ from .storage.repository import (
     connect,
     get_source_prior,
     init_db,
+    save_audit,
     save_correction,
     upsert_source_prior,
 )
@@ -143,6 +152,13 @@ def run_pipeline(
         budget_usd=ctx.budget_usd,
         log=log,
     )
+    # Refresh the taste profile from the reading list before scoring, so today's
+    # picks already reflect what you've been reading. Daily only — the hourly
+    # priority pass shouldn't re-tag the reading list. Skipped on dry-run.
+    if cadence is Cadence.DAILY and not dry_run:
+        from .pipeline.interest import sync_interest
+
+        sync_interest(deps)
     state = build_graph(deps).invoke(empty_state())
 
     return PipelineResult(
@@ -216,6 +232,60 @@ def handle_correction(
 
     log(f"learn: {event.kind.value} {event.source}/{event.topic} prior {base:.2f}→{new:.2f}")
     return CorrectionOutcome(event=event, prior_before=base, prior_after=new)
+
+
+def adjust_source_prior(
+    source: str,
+    direction: str,
+    *,
+    topic: str | None = None,
+    ctx: AppContext | None = None,
+    db_path: Path | None = None,
+    log: Callable[[str], None] = print,
+) -> list[tuple[str, float, float]]:
+    """Nudge a source's (source, topic) prior up or down from a chat request.
+
+    direction is "boost" or "demote". When topic is None the nudge applies to
+    every topic the source declares in sources.yaml, so "boost pointfree" Just
+    Works. Returns [(topic, before, after), ...]. Changes are reversible and
+    logged to audit_log.
+    """
+    if direction not in ("boost", "demote"):
+        raise ApplicationError(f"direction must be boost|demote, got {direction!r}")
+    ctx = ctx or load_default_context()
+    db_path = db_path or ctx.db_path
+
+    declared = {s.id: s.topics for s in ctx.sources_cfg.sources}
+    if source not in declared:
+        raise ApplicationError(f"Unknown source {source!r}.")
+    topics = [topic] if topic else declared[source]
+    if not topics:
+        raise ApplicationError(f"Source {source!r} declares no topics.")
+
+    kind = CorrectionKind.BOOST if direction == "boost" else CorrectionKind.DEMOTE
+    now = datetime.now(timezone.utc)
+    changes: list[tuple[str, float, float]] = []
+    conn = connect(db_path)
+    try:
+        for t in topics:
+            current = get_source_prior(conn, SourceId(source), TopicId(t))
+            base = 0.5 if current is None else current
+            new = updated_prior(base, kind)
+            upsert_source_prior(conn, SourceId(source), TopicId(t), new, now)
+            save_audit(
+                conn,
+                event=f"chat_tune:{direction}",
+                article_id=None,
+                payload_json=f'{{"source":"{source}","topic":"{t}","from":{base:.3f},"to":{new:.3f}}}',
+                at=now,
+            )
+            changes.append((t, base, new))
+        conn.commit()
+    finally:
+        conn.close()
+
+    log(f"tune: {direction} {source} → " + ", ".join(f"{t} {b:.2f}→{a:.2f}" for t, b, a in changes))
+    return changes
 
 
 # ---------------------------------------------------------------- #

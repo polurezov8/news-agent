@@ -49,7 +49,7 @@ def _schedule_block(cadence: Cadence) -> str:
 def generate_plist(
     cadence: Cadence,
     *,
-    bin_path: str,
+    uv_path: str,
     working_dir: str,
     log_dir: str,
 ) -> str:
@@ -62,7 +62,9 @@ def generate_plist(
         f"    <key>Label</key>\n    <string>{LABEL_PREFIX}.{cadence.value}</string>\n"
         "    <key>ProgramArguments</key>\n"
         "    <array>\n"
-        f"        <string>{bin_path}</string>\n"
+        f"        <string>{uv_path}</string>\n"
+        "        <string>run</string>\n"
+        "        <string>news-agent</string>\n"
         "        <string>run</string>\n"
         "        <string>--cadence</string>\n"
         f"        <string>{cadence.value}</string>\n"
@@ -84,11 +86,11 @@ def generate_plist(
 
 def generate_listener_plist(
     *,
-    bin_path: str,
+    uv_path: str,
     working_dir: str,
     log_dir: str,
 ) -> str:
-    """Plist for the reaction listener daemon — RunAtLoad + KeepAlive, no schedule."""
+    """Plist for the reaction + chat listener daemon — RunAtLoad + KeepAlive, no schedule."""
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -98,7 +100,9 @@ def generate_listener_plist(
         f"    <key>Label</key>\n    <string>{LISTENER_LABEL}</string>\n"
         "    <key>ProgramArguments</key>\n"
         "    <array>\n"
-        f"        <string>{bin_path}</string>\n"
+        f"        <string>{uv_path}</string>\n"
+        "        <string>run</string>\n"
+        "        <string>news-agent</string>\n"
         "        <string>slack</string>\n"
         "    </array>\n"
         f"    <key>WorkingDirectory</key>\n    <string>{working_dir}</string>\n"
@@ -118,7 +122,7 @@ def generate_listener_plist(
 
 def generate_backup_plist(
     *,
-    bin_path: str,
+    uv_path: str,
     working_dir: str,
     log_dir: str,
 ) -> str:
@@ -132,7 +136,9 @@ def generate_backup_plist(
         f"    <key>Label</key>\n    <string>{BACKUP_LABEL}</string>\n"
         "    <key>ProgramArguments</key>\n"
         "    <array>\n"
-        f"        <string>{bin_path}</string>\n"
+        f"        <string>{uv_path}</string>\n"
+        "        <string>run</string>\n"
+        "        <string>news-agent</string>\n"
         "        <string>backup</string>\n"
         "    </array>\n"
         f"    <key>WorkingDirectory</key>\n    <string>{working_dir}</string>\n"
@@ -166,16 +172,16 @@ def _backup_plist_path() -> Path:
     return LAUNCH_AGENTS_DIR / f"{BACKUP_LABEL}.plist"
 
 
-def _resolve_bin() -> str:
-    import sys
-
-    bin_path = shutil.which("news-agent")
-    if bin_path:
-        return bin_path
-    candidate = Path(sys.prefix) / "bin" / "news-agent"
-    if candidate.exists():
-        return str(candidate)
-    console.print("[red]`news-agent` not found. Activate the venv or `uv sync`.[/red]")
+def _resolve_uv() -> str:
+    """Path to the `uv` binary. launchd must exec `uv run news-agent …`, never the
+    project's `.venv/bin/news-agent` directly: on this Mac the venv lives under
+    ~/Desktop and macOS TCC blocks launchd from exec'ing binaries there
+    (Operation not permitted on pyvenv.cfg). uv lives outside Desktop, and
+    `uv run` resolves the project venv from WorkingDirectory."""
+    for cand in ("/opt/homebrew/bin/uv", shutil.which("uv")):
+        if cand and Path(cand).exists():
+            return cand
+    console.print("[red]`uv` not found at /opt/homebrew/bin/uv or on PATH.[/red]")
     raise typer.Exit(1)
 
 
@@ -195,7 +201,7 @@ def _load_plist(path: Path, label: str) -> None:
 @schedule_app.command()
 def install() -> None:
     """Write plists to ~/Library/LaunchAgents and launchctl load them."""
-    bin_path = _resolve_bin()
+    uv_path = _resolve_uv()
     working_dir = str(Path.cwd())
     LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -204,7 +210,7 @@ def install() -> None:
         path = _plist_path(cadence)
         path.write_text(generate_plist(
             cadence,
-            bin_path=bin_path,
+            uv_path=uv_path,
             working_dir=working_dir,
             log_dir=str(LOG_DIR),
         ))
@@ -212,7 +218,7 @@ def install() -> None:
 
     listener_path = _listener_plist_path()
     listener_path.write_text(generate_listener_plist(
-        bin_path=bin_path,
+        uv_path=uv_path,
         working_dir=working_dir,
         log_dir=str(LOG_DIR),
     ))
@@ -220,7 +226,7 @@ def install() -> None:
 
     backup_path = _backup_plist_path()
     backup_path.write_text(generate_backup_plist(
-        bin_path=bin_path,
+        uv_path=uv_path,
         working_dir=working_dir,
         log_dir=str(LOG_DIR),
     ))
