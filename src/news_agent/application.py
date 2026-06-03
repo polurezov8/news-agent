@@ -72,6 +72,7 @@ class PipelineResult:
     priority_items: list[tuple[Article, ScoreResult]]
     posted: int
     dry_run: bool
+    interest: object | None = None   # InterestSummary from the reading-list sync, if it ran
 
 
 @dataclass(frozen=True)
@@ -155,10 +156,11 @@ def run_pipeline(
     # Refresh the taste profile from the reading list before scoring, so today's
     # picks already reflect what you've been reading. Daily only — the hourly
     # priority pass shouldn't re-tag the reading list. Skipped on dry-run.
+    interest_summary = None
     if cadence is Cadence.DAILY and not dry_run:
         from .pipeline.interest import sync_interest
 
-        sync_interest(deps)
+        interest_summary = sync_interest(deps)
     state = build_graph(deps).invoke(empty_state())
 
     return PipelineResult(
@@ -170,6 +172,7 @@ def run_pipeline(
         priority_items=list(state["priority_items"]),
         posted=len(state["surface_refs"]),
         dry_run=dry_run,
+        interest=interest_summary,
     )
 
 

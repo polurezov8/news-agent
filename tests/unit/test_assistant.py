@@ -12,12 +12,14 @@ from news_agent.config.schema import (
     TopicsConfig,
 )
 from news_agent.core.types import Article, ArticleId, ContentHash, SourceId
-from news_agent.notifier.assistant import _fmt_articles, build_tools
+from news_agent.notifier.assistant import _fmt_articles, _to_slack_mrkdwn, build_tools
 from news_agent.storage.repository import (
     connect,
     get_source_prior,
     init_db,
+    recent_reading_list,
     search_articles,
+    set_article_read_at,
     upsert_article,
 )
 
@@ -84,6 +86,52 @@ class TestSearchArticles:
             conn.close()
 
 
+class TestReadingList:
+    def _seed_interest(self, db: Path) -> None:
+        from datetime import timedelta
+
+        now = datetime.now(timezone.utc)
+        conn = connect(db)
+        try:
+            for i in range(3):
+                upsert_article(conn, Article(
+                    id=ArticleId(f"safari_reading_list:{i}"),
+                    source=SourceId("safari_reading_list"),
+                    url=f"https://ex/{i}", title=f"Item {i}", body="b",
+                    content_hash=ContentHash(str(i)),
+                    published_at=now - timedelta(days=i), fetched_at=now,
+                ))
+            # item 2 was read later than anything was saved → newest activity.
+            set_article_read_at(conn, ArticleId("safari_reading_list:2"), now + timedelta(days=1))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_returns_interest_articles_with_read_state(self, tmp_path: Path):
+        db = tmp_path / "t.db"
+        init_db(db)
+        self._seed_interest(db)
+        conn = connect(db)
+        try:
+            rows = recent_reading_list(conn, source_ids=["safari_reading_list"], limit=5)
+        finally:
+            conn.close()
+        assert len(rows) == 3
+        # item 2 is read → sorts first by COALESCE(read_at, published_at)
+        first_article, first_read = rows[0]
+        assert first_article.id == "safari_reading_list:2"
+        assert first_read is not None
+
+    def test_empty_source_ids_returns_nothing(self, tmp_path: Path):
+        db = tmp_path / "t.db"
+        init_db(db)
+        conn = connect(db)
+        try:
+            assert recent_reading_list(conn, source_ids=[], limit=5) == []
+        finally:
+            conn.close()
+
+
 class TestAdjustSourcePrior:
     def test_boost_all_declared_topics(self, tmp_path: Path):
         ctx = _ctx(tmp_path)
@@ -114,12 +162,30 @@ class TestAssistantTooling:
     def test_build_tools_exposes_expected(self):
         names = {t.name for t in build_tools()}
         assert names == {
-            "search_news", "recent_picks", "my_taste",
+            "search_news", "recent_picks", "reading_list", "my_taste",
             "cost_status", "run_now", "adjust_source",
         }
 
     def test_fmt_articles_empty(self):
         assert _fmt_articles([]) == "No matches."
+
+
+class TestSlackMrkdwn:
+    def test_double_asterisk_to_single(self):
+        assert _to_slack_mrkdwn("- **252** fetched") == "- *252* fetched"
+
+    def test_multiple_bolds(self):
+        assert _to_slack_mrkdwn("**a** and **b**") == "*a* and *b*"
+
+    def test_header_to_bold(self):
+        assert _to_slack_mrkdwn("### Strong signals") == "*Strong signals*"
+
+    def test_plain_text_untouched(self):
+        assert _to_slack_mrkdwn("just text, one * star") == "just text, one * star"
+
+    def test_slack_link_untouched(self):
+        link = "<https://x|Title> is *already* slack"
+        assert _to_slack_mrkdwn(link) == link
 
     def test_fmt_articles_renders_slack_link(self):
         now = datetime.now(timezone.utc)

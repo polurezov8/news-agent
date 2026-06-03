@@ -293,6 +293,33 @@ def query_top_scored(
     return [(_row_to_article(r), _row_to_score(r, ArticleId(r["id"]))) for r in rows]
 
 
+def recent_reading_list(
+    conn: sqlite3.Connection,
+    *,
+    source_ids: list[str],
+    limit: int = 5,
+) -> list[tuple[Article, str | None]]:
+    """Most-recent interest-source (reading-list) articles, newest activity first.
+
+    Ordered by read time when present, else save time. Returns (article, read_at)
+    so callers can show read vs saved."""
+    if not source_ids:
+        return []
+    placeholders = ",".join("?" for _ in source_ids)
+    rows = conn.execute(
+        f"""
+        SELECT id, source_id, url, title, body, content_hash,
+               published_at, fetched_at, read_at
+        FROM articles
+        WHERE source_id IN ({placeholders})
+        ORDER BY COALESCE(read_at, published_at) DESC
+        LIMIT ?
+        """,
+        (*source_ids, limit),
+    ).fetchall()
+    return [(_row_to_article(r), r["read_at"]) for r in rows]
+
+
 def search_articles(
     conn: sqlite3.Connection,
     *,

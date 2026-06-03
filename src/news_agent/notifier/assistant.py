@@ -9,6 +9,7 @@ either. The model reads through tools; it never writes SQL directly.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ _SYSTEM = """You are the assistant for a personal news agent, talking to your ow
 You can:
 - search the collected articles (search_news)
 - show what was recently surfaced (recent_picks)
+- list recent Safari reading-list items the agent ingested (reading_list)
 - report what the agent has learned about their taste (my_taste)
 - report spend and counts (cost_status)
 - run the pipeline immediately (run_now) — this costs a little money and posts a digest
@@ -25,7 +27,10 @@ You can:
 Be terse and concrete. Use the tools rather than guessing. For run_now and
 adjust_source: restate exactly what you'll do and ask for a yes BEFORE calling
 the tool. Never call those two without a clear confirmation in the conversation.
-Link articles as Slack links: <url|title>."""
+
+Format for Slack mrkdwn, NOT GitHub markdown: bold is *single asterisks*,
+italic is _underscores_. Do NOT use **double asterisks** or # headers — Slack
+renders those literally. Link articles as <url|title>."""
 
 _MODEL_ENV = "NEWS_AGENT_MODEL_SMART"
 _DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -88,6 +93,31 @@ def build_tools():
         return _fmt_articles([(a, s.final) for a, s in rows])
 
     @tool
+    def reading_list(n: int = 5) -> str:
+        """The most recent items from the user's Safari reading list that the
+        agent has ingested (read or saved). Use this for 'what's in my reading
+        list' / 'my last N saved articles'."""
+        from news_agent.config.loader import load_sources
+        from news_agent.storage.repository import recent_reading_list
+
+        interest_ids = [
+            s.id for s in load_sources().sources
+            if getattr(s, "role", "discovery") == "interest"
+        ]
+        conn = connect(_db_path())
+        try:
+            rows = recent_reading_list(conn, source_ids=interest_ids, limit=n)
+        finally:
+            conn.close()
+        if not rows:
+            return "Nothing from the reading list yet."
+        lines = []
+        for article, read_at in rows:
+            state = "read" if read_at else "saved"
+            lines.append(f"• <{article.url}|{article.title}> — {state}")
+        return "\n".join(lines)
+
+    @tool
     def my_taste() -> str:
         """What the agent has learned you're interested in, from your reading list."""
         from news_agent.learning.taste import top_taste
@@ -119,10 +149,23 @@ def build_tools():
         from news_agent.core.types import Cadence
 
         result = run_pipeline(Cadence.DAILY, log=lambda _m: None)
-        return (
+        msg = (
             f"Done — {result.fetched} fetched, {result.scored} scored, "
             f"{result.posted} posted."
         )
+        isum = result.interest
+        if isum is not None:
+            if isum.synced == 0:
+                msg += (
+                    "\n⚠️ Reading-list sync read 0 items — the daemon likely lacks "
+                    "Full Disk Access, so taste isn't updating."
+                )
+            else:
+                msg += (
+                    f"\nReading list: {isum.synced} synced, {isum.newly_read} newly "
+                    f"read, {isum.taste_tags} taste tags."
+                )
+        return msg
 
     @tool
     def adjust_source(source: str, direction: str, topic: str = "") -> str:
@@ -136,7 +179,7 @@ def build_tools():
         )
         return "Updated: " + ", ".join(f"{t} {b:.2f}→{a:.2f}" for t, b, a in changes)
 
-    return [search_news, recent_picks, my_taste, cost_status, run_now, adjust_source]
+    return [search_news, recent_picks, reading_list, my_taste, cost_status, run_now, adjust_source]
 
 
 def answer(history: list, *, model: str | None = None) -> str:
@@ -159,7 +202,7 @@ def answer(history: list, *, model: str | None = None) -> str:
         resp = llm.invoke(messages)
         messages.append(resp)
         if not resp.tool_calls:
-            return _text_of(resp)
+            return _to_slack_mrkdwn(_text_of(resp))
         for call in resp.tool_calls:
             tool = tool_map.get(call["name"])
             try:
@@ -168,6 +211,15 @@ def answer(history: list, *, model: str | None = None) -> str:
                 result = f"Tool error: {exc}"
             messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
     return "Sorry — I got stuck working that out. Try rephrasing?"
+
+
+def _to_slack_mrkdwn(text: str) -> str:
+    """Convert the GitHub-flavored markdown the model tends to emit into Slack
+    mrkdwn: `**bold**` -> `*bold*`, `### header` -> `*header*`. Slack renders the
+    GitHub forms literally, so the bold never showed."""
+    text = re.sub(r"^\s{0,3}#{1,6}\s+(.*?)\s*$", r"*\1*", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text, flags=re.DOTALL)
+    return text
 
 
 def _text_of(resp) -> str:
