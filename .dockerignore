@@ -1,0 +1,25 @@
+# Keep secrets, local state, and dev cruft out of the build context.
+# Critically: .env and *.db must never enter an image layer.
+.env
+.env.local
+*.db
+*.sqlite
+*.sqlite3
+news_agent.db
+
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.DS_Store
+dist
+build
+*.egg-info
+logs
+tests
+.news-agent
+.superpowers
+docs/superpowers

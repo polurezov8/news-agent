@@ -1,0 +1,9 @@
+# news-agent schedules, run by supercronic in the `cron` container.
+# Times follow the container's TZ env var (set it in docker-compose / .env).
+# Mirrors the macOS launchd cadences this replaces.
+#
+#  min hour dom mon dow   command
+    0   10   *   *   *     news-agent run --cadence daily
+    0   *    *   *   *     news-agent run --cadence priority
+    0   10   *   *   0     news-agent run --cadence weekly
+    0   9    *   *   *     news-agent backup

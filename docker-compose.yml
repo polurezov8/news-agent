@@ -1,4 +1,47 @@
+# Always-on, self-hosted stack. Replaces the macOS launchd jobs so the agent
+# keeps running when your laptop sleeps or restarts.
+#
+#   listener  long-running Slack Socket Mode daemon (digests' reactions + chat)
+#   cron      supercronic firing the daily / priority / weekly / backup cadences
+#   rsshub    optional, only for Twitter/X list ingestion
+#
+# Secrets come from .env at runtime (git-ignored, never in the image).
+# Run:  docker compose up -d --build
 services:
+  listener:
+    build: .
+    image: news-agent:latest
+    restart: unless-stopped
+    command: ["news-agent", "slack"]
+    env_file: .env
+    environment:
+      TZ: ${TZ:-UTC}
+      NEWS_AGENT_DB: /data/news_agent.db
+      NEWS_AGENT_BACKUP_DIR: /data/backups
+      RSSHUB_BASE_URL: http://rsshub:1200
+    volumes:
+      - ./config:/app/config:ro
+      - agent-data:/data
+    depends_on:
+      - rsshub
+
+  cron:
+    # Reuses the image the listener builds; no second build.
+    image: news-agent:latest
+    restart: unless-stopped
+    command: ["supercronic", "/app/deploy/crontab"]
+    env_file: .env
+    environment:
+      TZ: ${TZ:-UTC}
+      NEWS_AGENT_DB: /data/news_agent.db
+      NEWS_AGENT_BACKUP_DIR: /data/backups
+      RSSHUB_BASE_URL: http://rsshub:1200
+    volumes:
+      - ./config:/app/config:ro
+      - agent-data:/data
+    depends_on:
+      - listener
+
   rsshub:
     image: diygod/rsshub:chromium-bundled
     restart: unless-stopped
@@ -16,3 +59,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+
+volumes:
+  agent-data:

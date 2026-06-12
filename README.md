@@ -14,6 +14,7 @@ A self-hosted agent that watches your topics across live sources, filters noise 
 - [Configuration](#configuration)
 - [Sources](#sources)
 - [Delivery](#delivery)
+- [Hosting](#hosting)
 - [CLI](#cli)
 - [Tests](#tests)
 
@@ -254,6 +255,34 @@ subscription above). A Sonnet tool-loop answers over your corpus:
 - **status** — "how much have we spent?"
 - **act** — "run now" (runs the pipeline), "boost pointfree", "demote DOU for AI"
   (nudges source trust). Side-effecting actions are confirmed in the chat first.
+
+---
+
+## Hosting
+
+Two ways to keep the agent running:
+
+| | macOS launchd | Docker (recommended) |
+|---|---|---|
+| Setup | `news-agent schedule install` | `docker compose up -d --build` |
+| Runs when | Mac is awake & unlocked | always — survives restarts and sleep |
+| Best for | trying it on your own Mac | a box you leave on (Pi, mini-PC, VPS) |
+
+On a laptop you restart often, launchd silently skips every digest while the
+machine is asleep, and priority DMs stop being real-time. The Docker stack runs
+a 24/7 listener plus a [supercronic](deploy/crontab) scheduler on a host that
+doesn't sleep.
+
+**Your keys stay yours.** Hosting never commits or uploads your `.env` — it's
+git-ignored and excluded from the image; secrets are injected at runtime. On
+hardware you own, the trust profile is identical to your Mac. See
+[`deploy/README.md`](deploy/README.md) for the full guide, including managed
+hosts (Railway/Fly).
+
+```bash
+cp .env.example .env          # fill keys; set TZ to your timezone
+docker compose up -d --build  # listener + cron + (optional) rsshub
+```
 
 ---
 
